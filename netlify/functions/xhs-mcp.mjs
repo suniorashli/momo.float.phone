@@ -1,3 +1,5 @@
+
+export const config = { runtime: 'edge' };
 /**
  * xhs-mcp.mjs —— 小红书 MCP 服务器（Netlify Function · 单文件版）
  * ============================================================================
@@ -1356,17 +1358,52 @@ const XHSLite = (() => {
     while (n > 0n) { s = B36[Number(n % 36n)] + s; n /= 36n; }
     return s;
   }
-  async function search(cookieStr, keyword, { page = 1, sort = 'general' } = {}, platform = 'xhs') {
+  async function search(cookieStr, keyword, { page = 1, sort = 'general' } = {}, platform = 'rednote') {
     const { apiBase } = platformConfig(platform);
     const ck = parseCookies(cookieStr);
     const st = SORT_MAP[sort] || 'general';
-    const payload = { keyword, page, page_size: 20, search_id: genSearchId(), sort: st, note_type: 0, ext_flags: [],
-      filters: [{ tags: [st], type: 'sort_type' }, { tags: ['不限'], type: 'filter_note_type' }, { tags: ['不限'], type: 'filter_note_time' }, { tags: ['不限'], type: 'filter_note_range' }, { tags: ['不限'], type: 'filter_pos_distance' }],
-      geo: '', image_formats: IMG_FORMATS };
-    const r = await signedPost(apiBase, '/api/sns/web/v1/search/notes', payload, cookieStr, ck);
-    const items = (r?.data?.items || []).filter((it) => it.id && (it.note_card || it.model_type === 'note'));
-    return { feeds: items.map(normItem), success: !!r?.success, msg: r?.msg, raw_error: r?.success ? undefined : r };
+    
+    // 提取原始词与拆分出的首个核心主词
+    const cleanKeyword = String(keyword || '').trim().replace(/\s+/g, ' ');
+    const primaryKeyword = cleanKeyword.split(' ')[0] || cleanKeyword;
+
+        const doSearch = async (kw) => {
+      const payload = {
+        keyword: kw,
+        page,
+        page_size: 20,
+        search_id: genSearchId(),
+        sort: st,
+        note_type: 0,
+        ext_flags: [],
+        image_formats: IMG_FORMATS
+      };
+      
+      // ================= 新增调试日志 =================
+      console.log(`[XHS_SEARCH_DEBUG] 正在搜索关键词: "${kw}"`);
+      
+      // 必须开启 useXrap: true 绕过 406 风控
+      const res = await signedPost(apiBase, '/api/sns/web/v1/search/notes', payload, cookieStr, ck, {}, false);
+      
+      console.log(`[XHS_SEARCH_RAW] 小红书接口原始返回:`, JSON.stringify(res));
+      // ===============================================
+      
+      return res; // 返回给下游逻辑
+    };
+    // 1. 先用全词搜
+    let r = await doSearch(cleanKeyword);
+    let items = (r?.data?.items || []).filter((it) => it.id && (it.note_card || it.model_type === 'note'));
+
+    // 2. 如果带空格且搜空了，自动降级用第 1 个核心主词（例如只要 "回避型"）重试
+    if (items.length === 0 && primaryKeyword !== cleanKeyword) {
+      r = await doSearch(primaryKeyword);
+      items = (r?.data?.items || []).filter((it) => it.id && (it.note_card || it.model_type === 'note'));
+    }
+
+    return { feeds: items.map(normItem), success: items.length > 0, msg: r?.msg };
   }
+
+  
   async function getFeedDetail(cookieStr, feedId, xsecToken, {
     xsecSource = 'pc_feed',
     loadComments = true,
@@ -1934,13 +1971,39 @@ function renderNote(note, index) {
     const author = note.author || note.nickname || (note.user && (note.user.nickname || note.user.name)) || "";
     const likes = note.liked_count || (note.interact_info && note.interact_info.liked_count) || "0";
     const token = note.xsec_token || note.xsecToken || "";
+    
+    // ================= 新增：拼接完整的小红书链接 =================
+    let url = "";
+    if (id) {
+        url = `https://www.xiaohongshu.com/explore/${id}${token ? `?xsec_token=${token}&xsec_source=pc_search` : ''}`;
+    }
+    // ==============================================================
+
     let line = `${index}. [${id}] ${title} | 作者:${author} | 赞:${likes}`;
+    if (url) line += `\n   链接: ${url}`; // 强制输出链接，方便插件抓取
     if (token) line += `\n   xsec_token: ${token}`;
     return line;
 }
 
 function renderNotes(payload, label) {
     const notes = pickNotes(payload);
+    // 搜索时自动写入内存池
+    if (globalThis.__XHS_NOTE_CACHE__) {
+        for (const n of notes) {
+            const nid = n.note_id || n.noteId || n.id;
+            if (nid) {
+                const cUrl = n.cover?.url_default || n.cover?.url || "";
+                globalThis.__XHS_NOTE_CACHE__.set(nid, {
+                    title: n.display_title || n.title || "小红书笔记",
+                    author: n.author || n.nickname || "小红书用户",
+                    likedCount: n.liked_count || 0,
+                    commentCount: 0,
+                    collectedCount: 0,
+                    coverUrl: cUrl ? cUrl.replace(/^http:\/\//, 'https://') : ""
+                });
+            }
+        }
+    }
     if (notes.length === 0) {
         const hint = payload && payload.error ? payload.error : (payload && payload.msg ? `小红书返回：${oneLine(payload.msg, 120)}` : "");
         return `${label}没有拿到笔记。${hint}\n常见原因：cookie 过期（先调 xhs_check_login）、关键词太窄、或触发了风控。`;
@@ -1972,6 +2035,9 @@ function renderDetail(payload) {
     out.push(`笔记 [${id}] ${title}`);
     out.push(`作者: ${user.nickname || user.nick_name || "(未知)"}${user.user_id ? ` (${user.user_id})` : ""}`);
     out.push(`赞: ${interact.liked_count || interact.likedCount || "0"} | 藏: ${interact.collected_count || "0"} | 评: ${interact.comment_count || "0"} | 图: ${images} 张`);
+    const token = note.xsec_token || "";
+    const noteUrl = `https://www.xiaohongshu.com/explore/${id}${token ? `?xsec_token=${token}&xsec_source=pc_feed` : ''}`;
+    out.push(`链接: ${noteUrl}`);
     out.push("");
     out.push("正文：");
     out.push(body || "(无正文)");
@@ -2357,50 +2423,178 @@ async function handleDiagnostics(url, env, request) {
 
 // ── Netlify Function 入口 ───────────────────────────────────────────────────
 
+// 请将这段完整代码复制到你的 Vercel 项目中的 xhs-mcp.mjs
 export default async function handler(request, context) {
+  try { // <--- try 必须在这里
     const env = (typeof process !== "undefined" && process.env) ? process.env : {};
-    const url = new URL(request.url);
+    const protocol = request.headers.get('x-forwarded-proto') || 'http';
+    const host = request.headers.get('host') || 'localhost';
+    const url = new URL(request.url, `${protocol}://${host}`);
 
     if (request.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
 
-    // 探活：浏览器直接打开这个地址能看到的页面，用来确认部署成功。
-    // 加 ?check=1 就是完整体检：cookie 是死是活、缺哪个字段、小红书原话。
     if (request.method === "GET") {
         if (url.searchParams.get("check")) {
             return await handleDiagnostics(url, env, request);
         }
+        
+        // 智能内存缓存池：暂存原生 xhs_search 出来的卡片信息
+        globalThis.__XHS_NOTE_CACHE__ = globalThis.__XHS_NOTE_CACHE__ || new Map();
+
+        if (url.searchParams.get("resolve_share")) {
+            const rawText = url.searchParams.get("resolve_share");
+            try {
+                const linkMatch = rawText.match(/https?:\/\/(?:www\.)?(?:xiaohongshu\.com\/(?:explore|discovery\/item)\/([a-zA-Z0-9]+)|xhslink\.(?:cn|com)\/[a-zA-Z0-9_/?&=]+)/i);
+                if (!linkMatch) return json({ ok: false, error: "未找到小红书链接" }, 400);
+
+                let targetUrl = linkMatch[0];
+                let noteId = linkMatch[1] || "";
+                let xsecToken = "";
+
+                try {
+                    const u = new URL(targetUrl);
+                    xsecToken = u.searchParams.get("xsec_token") || "";
+                } catch(e) {}
+
+                // 短链 302 重定向解析出真正 noteId 与 token
+                if (!noteId) {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 4000);
+                    try {
+                        const resp = await fetch(targetUrl, {
+                            headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1' },
+                            redirect: 'follow',
+                            signal: controller.signal
+                        });
+                        clearTimeout(timeoutId);
+                        const finalUrl = resp.url || "";
+                        const idMatch = finalUrl.match(/xiaohongshu\.com\/(?:explore|discovery\/item)\/([a-zA-Z0-9]+)/);
+                        if (idMatch) noteId = idMatch[1];
+                        try {
+                            const u = new URL(finalUrl);
+                            xsecToken = u.searchParams.get("xsec_token") || xsecToken;
+                        } catch(e) {}
+                    } catch (fetchErr) {
+                        clearTimeout(timeoutId);
+                    }
+                }
+
+                if (!noteId) return json({ ok: false, error: "无法解析小红书笔记ID" }, 400);
+
+                // 1. 优先检查搜索缓存池（AI原生搜索过的直接命中）
+                const cachedNote = globalThis.__XHS_NOTE_CACHE__.get(noteId);
+
+                // 2. 正常请求详情
+                let res = await callCore("get-feed-detail", { feed_id: noteId, xsec_token: xsecToken }, env);
+                let note = (res && res.data && res.data.note) || {};
+
+                // 3. 缺 token 导致没标题时，直接使用缓存兜底
+                if (!note.title && !note.desc && cachedNote) {
+                    return json({
+                        ok: true,
+                        noteId,
+                        note: cachedNote
+                    });
+                }
+
+                // 4. 仍为空则按 ID 自动逆向搜索补齐
+                if (!note.title && !note.desc) {
+                    const sRes = await callCore("search", { keyword: noteId, page: 1 }, env);
+                    const hit = sRes?.feeds?.[0];
+                    if (hit) {
+                        const hitCover = hit.cover?.url_default || hit.cover?.url || "";
+                        return json({
+                            ok: true,
+                            noteId,
+                            note: {
+                                title: hit.title || hit.display_title || "小红书笔记",
+                                author: hit.author || hit.nickname || "小红书用户",
+                                likedCount: hit.liked_count || 0,
+                                commentCount: 0,
+                                collectedCount: 0,
+                                coverUrl: hitCover ? hitCover.replace(/^http:\/\//, 'https://') : ""
+                            }
+                        });
+                    }
+                }
+
+                const user = note.user || {};
+                const interact = note.interact_info || {};
+                const firstImg = (note.image_list && note.image_list[0]) || {};
+                const cover = firstImg.url_default || firstImg.url_pre || firstImg.url || (firstImg.info_list && firstImg.info_list[0] && firstImg.info_list[0].url) || "";
+
+                return json({
+                    ok: true,
+                    noteId,
+                    note: {
+                        title: note.title || note.display_title || "小红书笔记",
+                        author: user.nickname || user.nick_name || "小红书用户",
+                        likedCount: interact.liked_count ?? interact.likedCount ?? 0,
+                        commentCount: interact.comment_count ?? interact.commentCount ?? 0,
+                        collectedCount: interact.collected_count ?? interact.collectedCount ?? 0,
+                        coverUrl: cover ? cover.replace(/^http:\/\//, 'https://') : ""
+                    }
+                });
+            } catch (e) {
+                return json({ ok: false, error: e.message }, 500);
+            }
+        }
+        
+        if (url.searchParams.get("card_note_id")) {
+            const noteId = url.searchParams.get("card_note_id");
+            try {
+                const res = await callCore("get-feed-detail", { feed_id: noteId, xsec_token: url.searchParams.get("token") || "" }, env);
+                const note = (res && res.data && res.data.note) || {};
+                const user = note.user || {};
+                const interact = note.interact_info || {};
+                const firstImg = (note.image_list && note.image_list[0]) || {};
+                const cover = firstImg.url_default || firstImg.url_pre || firstImg.url || (firstImg.info_list && firstImg.info_list[0] && firstImg.info_list[0].url) || "";
+                return json({
+                    ok: true,
+                    note: {
+                        title: note.title || note.display_title || "小红书笔记",
+                        author: user.nickname || user.nick_name || "小红书用户",
+                        likedCount: interact.liked_count ?? interact.likedCount ?? 0,
+                        commentCount: interact.comment_count ?? interact.commentCount ?? 0,
+                        collectedCount: interact.collected_count ?? interact.collectedCount ?? 0,
+                        imageCount: Array.isArray(note.image_list) ? note.image_list.length : 1,
+                        type: note.type || "normal",
+                        coverUrl: cover ? cover.replace(/^http:\/\//, 'https://') : ""
+                    }
+                });
+            } catch (e) {
+                return json({ ok: false, error: e.message }, 500);
+            }
+        }
+
+        if (url.searchParams.get("img")) {
+            try {
+                const imgUrl = url.searchParams.get("img");
+                const imgResp = await fetch(imgUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36', 'Referer': 'https://www.xiaohongshu.com/' } });
+                return new Response(imgResp.body, { headers: { 'Content-Type': imgResp.headers.get('content-type') || 'image/jpeg', 'Cache-Control': 'public, max-age=86400', ...CORS_HEADERS } });
+            } catch (e) {
+                return new Response(null, { status: 404, headers: CORS_HEADERS });
+            }
+        }
+        
         return json({
-            status: "ok",
-            server: SERVER_INFO,
-            tools: TOOLS.length,
-            tool_names: TOOLS.map(t => t.name),
-            cookie_configured: !!(env && env.XHS_COOKIE),
-            auth_required: !!(env && env.MCP_KEY),
-            mcp_endpoint: url.origin + url.pathname,
-            diagnostics: url.origin + url.pathname + "?check=1",
+            status: "ok", server: SERVER_INFO, tools: TOOLS.length, tool_names: TOOLS.map(t => t.name),
+            cookie_configured: !!(env && env.XHS_COOKIE), auth_required: !!(env && env.MCP_KEY),
+            mcp_endpoint: url.origin + url.pathname, diagnostics: url.origin + url.pathname + "?check=1",
             hint: "把这个地址填进 ai-virtual-phone 的设置 -> 工具(MCP) -> 服务器 URL",
         });
     }
 
-    if (request.method !== "POST") {
-        return json({ error: "只接受 POST（MCP 协议）。GET 可以用来探活。" }, 405);
-    }
-
+    if (request.method !== "POST") return json({ error: "只接受 POST（MCP 协议）。GET 可以用来探活。" }, 405);
     if (env && env.MCP_KEY) {
         const auth = request.headers.get("Authorization") || "";
-        if (auth !== `Bearer ${env.MCP_KEY}`) {
-            return json({ error: "Unauthorized" }, 401, { "WWW-Authenticate": 'Bearer realm="xhs-mcp"' });
-        }
+        if (auth !== `Bearer ${env.MCP_KEY}`) return json({ error: "Unauthorized" }, 401, { "WWW-Authenticate": 'Bearer realm="xhs-mcp"' });
     }
 
     let body;
-    try {
-        body = await request.json();
-    } catch {
-        return rpcError(undefined, -32700, "Parse error");
-    }
+    try { body = await request.json(); } catch { return rpcError(undefined, -32700, "Parse error"); }
 
     try {
         if (Array.isArray(body)) {
@@ -2416,4 +2610,14 @@ export default async function handler(request, context) {
     } catch (err) {
         return rpcError(body && body.id, -32603, err instanceof Error ? err.message : String(err));
     }
+  } catch (globalError) { // <--- 整个函数最外层、最后的 catch
+      return new Response(JSON.stringify({ 
+          ok: false, 
+          error: "全局捕获异常: " + globalError.message,
+          stack: globalError.stack ? globalError.stack.slice(0, 500) : ""
+      }), {
+          status: 500,
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+      });
+  }
 }
