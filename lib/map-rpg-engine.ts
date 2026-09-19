@@ -2,7 +2,7 @@
 // RPG Map Mode — LLM integration for world generation + event expansion
 // Fork mods: CoC/CoJ-style TRPG mode (CoC 6th Ed. attributes, module import, sparse NPC worlds)
 
-import type { WorldSkeleton, WorldSkeletonInput, EventScene, GameSave, WorldNPC, QuestLine, EncounterSeed, CharacterAgent, AgentDecision, RichRegion, Declaration, CharStats, RulesEdition } from "./map-types";
+import type { WorldSkeleton, WorldSkeletonInput, EventScene, GameSave, WorldNPC, QuestLine, EncounterSeed, CharacterAgent, AgentDecision, RichRegion, Declaration, CharStats, RulesEdition, PersonalSecret } from "./map-types";
 import { STAT_LABELS, ALL_STATS, SKILL_STAT_HINT } from "./map-types";
 import { simpleLLMCall } from "./api-helpers";
 import { previewMessagesForApi, sendLLMRequest } from "./chat-engine";
@@ -233,6 +233,11 @@ NPC与怪物创作指导（COC风格，与DND式"每个据点必有NPC"完全相
 - 世界风格基调：{{tone}}
 - 主线类型倾向：{{main_quest_type}}
 - 难度倾向：{{difficulty}}
+- 【秘密团规则】最后输出一个 #秘密团 区块，为调查员准备个人秘密：
+  · 数量 = 调查员人数+1（多备一份给玩家本人），每个秘密格式：[秘密N]内容 | [咬合N]与主线真相的关联 | [知情者N]知道更多的NPC名（必须取自本模组已定义的NPC）
+  · 每个秘密必须：互相不重复、各自独立可守、与主线真相有一个明确咬合点、知道完整内情的NPC在本图中可找到
+  · 秘密可以是：目击了某事件、藏了某物、隐瞒了身份或动机、与某个NPC有私交/旧怨、提前读过某页文献等
+  · 秘密不影响调查员「想要查明真相」的立场——他们守秘密是为了自保或保护某人，不是与全队为敌
 {{module_text}}`;
 
 // ── Tagged-block world parser (replaces fragile JSON; same shape as the old JSON.parse) ──
@@ -317,6 +322,7 @@ function parseWorldTagged(text: string): Record<string, unknown> {
   const regions: Record<string, unknown>[] = [];
   let mainQuest: Record<string, unknown> = {};
   let dossier: Record<string, unknown> = {};
+  let personalSecrets: Record<string, string>[] = [];
 
   for (let i = 0; i < heads.length; i++) {
     const cur = heads[i];
@@ -336,6 +342,16 @@ function parseWorldTagged(text: string): Record<string, unknown> {
         unlock_hint: f[`阶段${n}解锁`] || f[`阶段${n}解锁提示`] || "",
       })).filter(s => s.location_hint || s.brief);
       mainQuest = { id: f["id"] || "mq", title: f["标题"] || "", synopsis: f["梗概"] || f["简介"] || "", stages };
+    } else if (/^秘密团|^个人秘密|^秘密/.test(header)) {
+      const f = parseWorldTaggedFields(body);
+      const secrets: Record<string, string>[] = [];
+      const idxSet = [...new Set(Object.keys(f).map(k => k.match(/^秘密(\d+)$/)?.[1] ?? "").filter(Boolean))].map(Number).sort((a, b) => a - b);
+      for (const n of idxSet) {
+        if ((f[`秘密${n}`] || "").trim()) {
+          secrets.push({ content: f[`秘密${n}`], link: f[`咬合${n}`] || "", informant: f[`知情者${n}`] || "" });
+        }
+      }
+      personalSecrets = secrets;
     } else if (/^档案|^DM|^密档/.test(header)) {
       const f = parseWorldTaggedFields(body);
       const npcSecrets: Record<string, string> = {};
@@ -360,6 +376,7 @@ function parseWorldTagged(text: string): Record<string, unknown> {
     regions,
     main_quest: mainQuest,
     dm_dossier: dossier,
+    personal_secrets: personalSecrets,
   };
 }
 
@@ -517,6 +534,7 @@ export async function generateWorldSkeleton(
     encounterPool,
     partyStats: {},
     dmDossier,
+    personalSecrets: (parsed.personal_secrets as PersonalSecret[]) || [],
   };
 }
 
@@ -576,6 +594,18 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 - 有秘密的NPC：初期正常表现，中期言行出现矛盾暗示，后期可能暴露
 - NPC之间也有关系和冲突，利用这些制造戏剧张力
 
+【秘密团机制】（仅当上下文存在[调查员秘密]块时生效）
+- 每位调查员都可能藏着个人秘密（内容见[调查员秘密]），他们是调查伙伴，不是敌人
+- 你知道所有秘密。演出守秘密的人：言行有破绽（欲言又止、回避特定话题、偷偷做小动作），但不替他们摊牌
+- 调查员宣言若涉及自己的秘密，按其宣言演出（他想公开就公开，想隐瞒你可以让NPC起疑但不当场揭穿）
+- 知情NPC被单独问到相关话题时，可以给出秘密的补充信息（推进剧情），也可以试探反问
+- 不要主动泄露任何调查员的秘密给他人——那是持有者的底牌，摊牌时机属于PL
+
+【私聊幕·KP导演】（仅当上下文存在[调查员秘密]块时生效）
+- 场景里出现自然的私下契机时（某人被单独留下/主动避开众人/知情NPC欲言又止），在 side_scenes 数组输出最多1幕：{who:调查员名, npc:NPC名, intent:契机一句话, summary:这场私聊发生了什么（2-3句，你自己写）}
+- who 可以是 {{user}} 或同伴名。私聊内容其他调查员不知道——summary 只进锁档，不当场公开
+- 每轮最多1幕，没有合适契机就留空[]。不要为了私聊而私聊
+
 【位置更新】如果剧情中队伍移动到了新地点，move_to必须填写目的地节点名（从地图节点中选）。不填则位置不变。
 
 【旁白排版】
@@ -600,6 +630,7 @@ export type DMSceneResult = {
   topics?: { label: string; skillHint?: string }[];
   clues?: string[];
   investigationDone?: boolean;
+  sideScenes?: { who: string; npc: string; intent?: string; summary?: string }[];
   journal: string;
   gained: string[];
   lost: string[];
@@ -652,6 +683,10 @@ export type DMContext = {
   kpStyle?: string;
   // Fork: CoC rules edition (6th/7th) — affects KP rule card wording & dice math
   rulesEdition?: RulesEdition;
+  // Fork 八期A: secret-party — KP omniscience (all secrets, incl. who guards what)
+  partySecrets?: { who: string; secret: PersonalSecret }[];
+  // Fork 八期B: locked private-talk log (for ending branch adjudication; formatted strings)
+  lockedLogSummary?: string[];
 };
 
 /** Truncate an array of strings from the oldest, keeping newest within token budget */
@@ -711,8 +746,12 @@ function buildDMUserMsg(ctx: DMContext): string {
     mapBlock = lines.join("\n");
   }
 
-  // DM secrets
-  const dmBlock = dm ? `\n[密档]
+  // DM secrets + party secrets (fork 八期A — KP sees everything)
+  const secretsBlock = ctx.partySecrets && ctx.partySecrets.length > 0 ? `\n[调查员秘密]（KP全知；其他人互不知晓）
+${ctx.partySecrets.map(s => `${s.who}：${s.secret.content}（咬合点：${s.secret.link}${s.secret.informant ? `；知情者：${s.secret.informant}` : ""}）`).join("\n")}` : "";
+  const lockedBlock = ctx.lockedLogSummary && ctx.lockedLogSummary.length > 0 ? `\n[锁档私聊]（发生过但其他调查员不知情的私下交谈）
+${ctx.lockedLogSummary.join("\n")}` : "";
+  const dmBlock = dm ? `${secretsBlock}${lockedBlock}\n[密档]
 真相：${dm.hiddenTruth}
 ${ctx.npcSecret ? `当前NPC秘密：${ctx.npcSecret}` : ""}
 NPC秘密：${Object.entries(dm.npcSecrets).map(([k, v]) => `${k}→${v}`).join("；")}
@@ -872,6 +911,12 @@ export async function dmScene(ctx: DMContext, apiConfig: ApiConfig): Promise<DMS
     })).filter((t: { label: string }) => t.label),
     clues: (p.clues || []).map((c: unknown) => String(c || "")).filter(Boolean),
     investigationDone: p.investigation_done || p.investigationDone || false,
+    sideScenes: (p.side_scenes || p.sideScenes || []).map((s: Record<string, unknown>) => ({
+      who: String(s.who || ""),
+      npc: String(s.npc || ""),
+      intent: s.intent ? String(s.intent) : undefined,
+      summary: s.summary ? String(s.summary) : undefined,
+    })).filter((s: { who: string; npc: string }) => s.who && s.npc),
   };
 }
 
@@ -981,6 +1026,7 @@ export async function expandEvent(
     topics: dm.topics,
     clues: dm.clues,
     investigationDone: dm.investigationDone,
+    sideScenes: dm.sideScenes,
     affinityDelta: {},
     journalEntry: dm.journal,
     unlocks: [],
@@ -1031,7 +1077,7 @@ export async function companionDeclare(
   streamLog?: import("./map-types").StreamMessage[],
   overrideUserIdentity?: import("../components/settings/user-identity").UserIdentity | null,
   overrideAffinity?: number,
-  options?: { instruction?: string },
+  options?: { instruction?: string; secretHint?: string },
 ): Promise<Declaration> {
   const allChars = loadCharacters();
   const character = allChars.find(c => c.id === characterId);
@@ -1091,7 +1137,7 @@ async function buildCompanionDeclarePromptPayload(
   streamLog?: import("./map-types").StreamMessage[],
   overrideUserIdentity?: import("../components/settings/user-identity").UserIdentity | null,
   overrideAffinity?: number,
-  options?: { instruction?: string },
+  options?: { instruction?: string; secretHint?: string },
 ) {
   const allChars = loadCharacters();
   const character = allChars.find(c => c.id === characterId);
@@ -1114,7 +1160,8 @@ async function buildCompanionDeclarePromptPayload(
   if (!apiConfig) throw new Error("未找到可用的 API 配置");
   const adventureConfig = loadAdventureInteractionConfig();
 
-  const filteredLog = (streamLog || []).filter(m => m.type !== "system");
+  // Fork 八期B: audience isolation — companions never see locked private talks (user's or others')
+  const filteredLog = (streamLog || []).filter(m => m.type !== "system" && !(m.audience && m.audience.includes("locked")));
   const pastHistory: import("./chat-storage").ChatMessage[] = filteredLog.map((m, i) => ({
     id: m.id || `sl_${i}`,
     sessionId: "",
@@ -1132,9 +1179,12 @@ async function buildCompanionDeclarePromptPayload(
 4) 想清楚你为什么这么做——按你的人设和当前处境行动，不要人云亦云`,
     userIdentity?.name,
   );
+  const historyContentFinal = options?.secretHint?.trim()
+    ? `${historyContent}\n\n${options.secretHint.trim()}`
+    : historyContent;
   const history = [
     ...pastHistory,
-    { id: "adv_declare", sessionId: "", role: "user" as const, content: historyContent, status: "sent" as const, createdAt: new Date().toISOString() },
+    { id: "adv_declare", sessionId: "", role: "user" as const, content: historyContentFinal, status: "sent" as const, createdAt: new Date().toISOString() },
   ];
 
   const { recentBlocks, truncatedHistory, wbActivationContext, unifiedRecentItems } = prepareShortTermContext(
@@ -1246,7 +1296,7 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是COC跑团的守秘人（KP）。
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
-{"narration":"火光在墙上跳了两下，照得每个人的神情都忽明忽暗。\\n\\n队伍各自的行动在同一刻撞在一起，让原本僵持的局势突然松动。\\n\\n门外传来的脚步声，说明新的变化已经逼近。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"新局势描述","choices":[{"label":"小心地调查声音来源","stat_check":{"stat":"聆听"}},{"label":"{{user}}镇定地与警察周旋","stat_check":{"stat":"话术","who":"{{user}}"}},{"label":"直接离开"}],"journal":"日志","gained":["获得物品"],"lost":["失去物品或SAN-3"],"clues":["新获得的关键线索"],"topics":[],"investigation_done":false,"advance":false,"ending":false,"move_to":"节点名 或 {\"{{user}}\":\"节点名\",\"角色名\":\"节点名\"}","world_events":["世界各处事件"]}`;
+{"narration":"火光在墙上跳了两下，照得每个人的神情都忽明忽暗。\\n\\n队伍各自的行动在同一刻撞在一起，让原本僵持的局势突然松动。\\n\\n门外传来的脚步声，说明新的变化已经逼近。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"新局势描述","choices":[{"label":"小心地调查声音来源","stat_check":{"stat":"聆听"}},{"label":"{{user}}镇定地与警察周旋","stat_check":{"stat":"话术","who":"{{user}}"}},{"label":"直接离开"}],"journal":"日志","gained":["获得物品"],"lost":["失去物品或SAN-3"],"clues":["新获得的关键线索"],"topics":[],"investigation_done":false,"side_scenes":[],"advance":false,"ending":false,"move_to":"节点名 或 {\"{{user}}\":\"节点名\",\"角色名\":\"节点名\"}","world_events":["世界各处事件"]}`;
 
 async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneResult> {
   const userMsg = buildDMUserMsg(ctx);
@@ -1299,6 +1349,12 @@ async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneR
     })).filter((t: { label: string }) => t.label),
     clues: (p.clues || []).map((c: unknown) => String(c || "")).filter(Boolean),
     investigationDone: p.investigation_done || p.investigationDone || false,
+    sideScenes: (p.side_scenes || p.sideScenes || []).map((s: Record<string, unknown>) => ({
+      who: String(s.who || ""),
+      npc: String(s.npc || ""),
+      intent: s.intent ? String(s.intent) : undefined,
+      summary: s.summary ? String(s.summary) : undefined,
+    })).filter((s: { who: string; npc: string }) => s.who && s.npc),
   };
 }
 
@@ -1336,6 +1392,7 @@ export async function resolveRound(
     topics: dm.topics,
     clues: dm.clues,
     investigationDone: dm.investigationDone,
+    sideScenes: dm.sideScenes,
   };
 }
 
@@ -1626,6 +1683,7 @@ export const DEFAULT_DM_ENDING_PROMPT = `你是COC跑团的守秘人（KP）。�
 - 好感度高的角色结局更温暖，好感度低的更疏远；SAN损失惨重的角色结局带有阴影
 - 基于玩家实际做过的选择，不要编造没发生过的事
 - 指代玩家/用户本人时，使用 {{user}}，不要写"你"或"你们"
+- 【秘密团结局】若上下文提供了[调查员秘密]与锁档私聊记录：逐一判定每份秘密「被公开/半公开/始终保守」，并据此演出不同结局分支——公开秘密会改变信任关系与结局走向，守住的秘密带着它的代价进入尾声；结局自然提及各人的秘密落点，不强行揭穿
 
 只输出JSON：
 {"paragraphs":["第一段...","第二段..."],"closing":"收束语"}`;

@@ -59,6 +59,9 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   const [freeAction, setFreeAction] = useState("");
   // Fork: player-chosen check skill for the current declaration
   const [checkSkill, setCheckSkill] = useState("");
+  // Fork 八期B: private-talk toggle — when on, the declaration goes through the locked pipeline
+  const [privateTalk, setPrivateTalk] = useState(false);
+  const [privateTalkNpc, setPrivateTalkNpc] = useState("");
   const [currentHints, setCurrentHints] = useState<{ label: string; skillHint?: string }[] | null>(save.pendingEvent?.hints || null);
   // Fork: NPC talk topics from KP (tappable → fills speech input)
   const [currentTopics, setCurrentTopics] = useState<{ label: string; skillHint?: string }[] | null>(null);
@@ -135,6 +138,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   const persistSave = useCallback((newSave: GameSave) => {
     const withExtra: GameSave = {
       ...newSave,
+      lockedLog: lockedLogRef.current.length > 0 ? lockedLogRef.current : newSave.lockedLog,
       streamLog: streamRef.current.slice(-200),
       pendingEvent: inEventRef.current ? {
         inEvent: true,
@@ -475,6 +479,10 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         mainQuestNodeMap: mqNodeMap,
         kpStyle: (skeleton.world.lore.match(/【KP风格指令】([\s\S]*)/)?.[1] || "").trim() || undefined,
         rulesEdition: skeleton.world.rulesEdition || "coc6",
+        partySecrets: [
+          ...(save.mySecret ? [{ who: userIdentity?.name || "你", secret: save.mySecret }] : []),
+          ...Object.entries(save.agentSecrets || {}).map(([cid, s]) => ({ who: charName(cid), secret: s })),
+        ],
         partyStatus: {
           hp: save.hp,
           maxHp: save.maxHp,
@@ -625,7 +633,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         if (pendingIds.length > 0) {
           setLoadingPhase("companions");
           for (const cid of pendingIds) {
-            const decl = await companionDeclare(cid, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, save.agents.find(a => a.characterId === cid)?.affinity);
+            const decl = await companionDeclare(cid, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, save.agents.find(a => a.characterId === cid)?.affinity, save.agentSecrets?.[cid] ? { secretHint: `【你的秘密】${save.agentSecrets[cid].content}（与真相的咬合点：${save.agentSecrets[cid].link}${save.agentSecrets[cid].informant ? `；${save.agentSecrets[cid].informant}知道更多——你可以私下找TA求证）` : "）"}\n这是只有你知道的事。平时言行可以露出破绽（欲言又止、回避话题、偷偷做小动作），但不要直接说破；何时摊牌由你决定。不要在宣言里向队友透露秘密内容，除非你决定此刻公开它。` } : undefined);
 
             if (decl.failed) {
               pushMessages({ id: mkId(), type: "system", text: `${decl.speaker} 回复失败` });
@@ -973,6 +981,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           try { dmCtxForEnding = JSON.parse(eventContext); } catch { dmCtxForEnding = { worldLore: skeleton.world.lore, currentLocation: currentNode?.name || "", eventType: "", eventBrief: "", companionNames: [], recentJournal: save.journal.map(j => j.text), keyChoices: save.keyChoices, gameTime: formatGameTime(save.gameDay, save.gameTime) }; }
           dmCtxForEnding.director = newSave.director;
           dmCtxForEnding.recentJournal = newSave.journal.map(j => j.text);
+          dmCtxForEnding.lockedLogSummary = lockedLogRef.current.map(e => `${e.day} · ${e.who} 与 ${e.npc || "某人"}私下交谈：${e.text}`);
           const ending = await generateEnding(dmCtxForEnding, apiConfig);
           setEndingData(ending);
           setEndingStep(0);
@@ -985,6 +994,23 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         return;
       }
 
+      // Fork 八期B: KP-directed side scenes → locked log (reveal at ending)
+      let sideSceneEntries: NonNullable<GameSave["lockedLog"]> = [];
+      {
+        const ss = ((continuation as EventScene & { sideScenes?: { who: string; npc: string; intent?: string; summary?: string }[] }).sideScenes || []);
+        const sc = ss[0];
+        if (sc) {
+          const dayLabel = formatGameTime(newSave.gameDay, newSave.gameTime);
+          const me = userIdentity?.name || "你";
+          const entry = { id: `lock_${Date.now()}`, who: sc.who, npc: sc.npc, text: sc.summary || sc.intent || "（一场无人知晓的交谈）", day: dayLabel };
+          // Push to user stream only if the user was part of it
+          if (sc.who === me) {
+            pushMessages({ id: mkId(), type: "narration", text: `🔒〔私聊·只有你和${sc.npc}在场〕${entry.text}`, audience: ["locked"] });
+          }
+          lockedLogRef.current = [...lockedLogRef.current, entry];
+          sideSceneEntries = [...sideSceneEntries, entry];
+        }
+      }
       // Fork: archive clues from this resolve round + investigation-done hint + time ticks
       {
         const resolveClues = ((continuation as EventScene & { clues?: string[] }).clues || []).filter(Boolean);
@@ -996,6 +1022,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         }
         const ticks = (save.timeTicks || 0) + 1;
         let timedSave = newSave;
+        if (sideSceneEntries.length) timedSave = { ...timedSave, lockedLog: [...(timedSave.lockedLog || []), ...sideSceneEntries] };
         if (ticks >= 4) {
           const adv = advanceTime(save.gameTime, 1);
           const timeLabel: Record<string, string> = { morning: "清晨", afternoon: "午后", evening: "黄昏", night: "夜晚" };
@@ -1077,6 +1104,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   const usedSkillsRef = useRef<Set<string>>(new Set());
   // Fork: skills that already failed this scene (soft re-roll guard → pushed check / KP adjudication)
   const failedSkillsRef = useRef<Set<string>>(new Set());
+  // Fork 八期B: locked private-talk log (in-memory mirror of save.lockedLog; reveal at ending)
+  const lockedLogRef = useRef<{ id: string; who: string; npc?: string; text: string; day: string }[]>(save.lockedLog || []);
 
   // ── CoC6 madness builder (helper) ──
   const newSaveMadness = (sanBefore: number, verdict: { temporaryMadness: boolean; goneInsane: boolean }, sanAfter: number): { temporary?: { rounds: number; symptom: string }; permanent?: boolean; raw: GameSave["madness"] } => {
@@ -1288,7 +1317,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               streamRef.current,
               save.agents.length > 1 ? userIdentity : undefined,
               save.agents.find(a => a.characterId === cid)?.affinity,
-              { instruction: exitReactionInstruction },
+              { instruction: exitReactionInstruction, secretHint: save.agentSecrets?.[cid] ? `【你的秘密】${save.agentSecrets[cid].content}——是否透露、何时摊牌由你决定。` : undefined },
             ))
           );
           for (const decl of decls) {
@@ -1435,6 +1464,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   // ── Handle free text input ──
   const handleFreeInput = useCallback(() => {
     if ((!freeText.trim() && !freeAction.trim()) || eventContinueLoading || eventLoading) return;
+    if (privateTalk && inEvent) { submitPrivateTalk(); return; }
     const speech = freeText.trim();
     const action = freeAction.trim();
     setFreeText("");
@@ -1451,7 +1481,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     } else {
       triggerEvent("talk", combined);
     }
-  }, [freeText, freeAction, eventContinueLoading, eventLoading, inEvent, handlePlayerAction, triggerEvent]);
+  }, [freeText, freeAction, eventContinueLoading, eventLoading, inEvent, handlePlayerAction, triggerEvent, privateTalk, submitPrivateTalk]);
 
   const submitFreeInput = useCallback(() => {
     if (freeMode) {
@@ -1470,11 +1500,31 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   }, [freeMode, freeText, freeAction, userIdentity, pushMessages, handleFreeInput]);
 
   // Fork: player declares with an explicitly chosen skill check (CoC loop)
+  // Fork 八期B: player-initiated private talk — visible to the user only, archived to lockedLog
+  const submitPrivateTalk = useCallback(() => {
+    const speech = freeText.trim();
+    const action = freeAction.trim();
+    if (!speech && !action) return;
+    const playerName = userIdentity?.name || "你";
+    const npcName = privateTalkNpc || "";
+    const content = [speech, action].filter(Boolean).join(" / ");
+    const dayLabel = formatGameTime(save.gameDay, save.gameTime);
+    const entry = { id: `lock_${Date.now()}`, who: playerName, npc: npcName || undefined, text: content, day: dayLabel };
+    lockedLogRef.current = [...lockedLogRef.current, entry];
+    persistSave({ ...save, lockedLog: [...(save.lockedLog || []), entry] });
+    pushMessages({ id: mkId(), type: "narration", text: `🔒〔你私下${npcName ? `对${npcName}` : ""}低语〕${content}`, audience: ["locked"] });
+    setFreeText("");
+    setFreeAction("");
+    setPrivateTalk(false);
+    setPrivateTalkNpc("");
+  }, [freeText, freeAction, privateTalkNpc, activeEventMeta, save, userIdentity, persistSave, pushMessages]);
+
   const submitDeclarationWithCheck = useCallback(() => {
     const skill = checkSkill.trim();
     const speech = freeText.trim();
     const action = freeAction.trim();
     if (!speech && !action && !skill) return;
+    if (privateTalk) { submitPrivateTalk(); return; }
     // Build declaration text; skill check runs first (player rolls), then the action goes into the round
     const combined = [
       speech ? `说：「${speech}」` : "",
@@ -1519,7 +1569,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       }
     }
     handlePlayerAction(combined, !skill);
-  }, [checkSkill, freeText, freeAction, save, is7th, diceMode, pushMessages, persistSave, handlePlayerAction, userIdentity]);
+  }, [checkSkill, freeText, freeAction, save, is7th, diceMode, pushMessages, persistSave, handlePlayerAction, userIdentity, privateTalk, submitPrivateTalk]);
 
   const handleToggleFreeMode = useCallback(() => {
     if (freeMode) {
@@ -1544,7 +1594,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       const apiConfig = (slot?.apiConfigId ? apiConfigs.find(c => c.id === slot.apiConfigId) : null) || apiConfigs.find(c => c.apiKey) || apiConfigs[0];
       if (!apiConfig?.apiKey) throw new Error("未找到API配置");
 
-      const decl = await companionDeclare(characterId, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, save.agents.find(a => a.characterId === characterId)?.affinity);
+      const decl = await companionDeclare(characterId, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, save.agents.find(a => a.characterId === characterId)?.affinity, save.agentSecrets?.[characterId] ? { secretHint: `【你的秘密】${save.agentSecrets[characterId].content}——是否透露、何时摊牌由你决定。` } : undefined);
 
       if (decl.speech && decl.speech !== "……") {
         pushMessages({ id: mkId(), type: "character", speaker: decl.speaker, text: decl.speech, emotion: decl.emotion });
@@ -1705,6 +1755,13 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     persistSave({ ...save, timestamp: new Date().toISOString() });
     onBack();
   }, [save, skeleton, onBack]);
+
+  // Fork 八期A: reveal overlay — full backstage view (all secrets + locked log), shown after ending
+  const [showReveal, setShowReveal] = useState(false);
+  const partySecretsView = [
+    ...(save.mySecret ? [{ who: userIdentity?.name || "你", secret: save.mySecret }] : []),
+    ...Object.entries(save.agentSecrets || {}).map(([cid, s]) => ({ who: charName(cid), secret: s })),
+  ];
 
   // Trigger encounters after user moves
   const handleMoveWithAgents = useCallback((targetNodeId: string) => {
@@ -2266,6 +2323,34 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                   }}
                 />
               </div>
+              {/* Fork 八期B: private-talk toggle + NPC name */}
+              {save.mySecret && inEvent && (
+                <div style={{ display: "flex", gap: 5 }}>
+                  <button type="button"
+                    onClick={() => setPrivateTalk(prev => !prev)}
+                    style={{
+                      padding: "5px 10px", borderRadius: 7,
+                      border: `1px solid ${privateTalk ? "rgba(150,120,220,0.5)" : "var(--c-adv-input-border)"}`,
+                      background: privateTalk ? "rgba(150,120,220,0.15)" : "var(--c-adv-input-bg)",
+                      color: privateTalk ? "rgba(190,170,240,0.95)" : "var(--c-adv-text-muted)",
+                      fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                    }}>
+                    🔒 {privateTalk ? "私下交谈中" : "私下询问"}
+                  </button>
+                  {privateTalk && (
+                    <input
+                      value={privateTalkNpc}
+                      onChange={e => setPrivateTalkNpc(e.target.value)}
+                      placeholder="对谁说（NPC名）"
+                      style={{
+                        flex: 1, minWidth: 0, padding: "5px 10px", borderRadius: 7,
+                        border: "1px solid rgba(150,120,220,0.3)", background: "var(--c-adv-input-bg)",
+                        color: "var(--c-adv-body)", fontSize: "calc(10px*var(--app-text-scale,1))", fontFamily: "inherit", outline: "none",
+                      }}
+                    />
+                  )}
+                </div>
+              )}
               {/* Fork: check-value preview (what will be rolled) */}
               {checkSkill.trim() && !freeMode && (() => {
                 const preview = skillCheckValue(save.playerSheet, checkSkill.trim(), save.playerStats, is7th ? "coc7" : "coc6");
@@ -3325,6 +3410,17 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                   <div style={{ marginTop: 2 }}>{currentNode?.name}</div>
                   <div style={{ marginTop: 2 }}>主线 第{Math.min(save.mainQuestStage + 1, skeleton.mainQuest.stages.length)}/{skeleton.mainQuest.stages.length}阶段</div>
                 </div>
+
+                {/* My secret card (fork 八期A — visible to user only, reveal timing is theirs) */}
+                {save.mySecret && (
+                  <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "rgba(150,120,220,0.08)", border: "1px solid rgba(150,120,220,0.25)" }}>
+                    <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(190,170,240,0.9)", marginBottom: 4, fontFamily: "monospace", letterSpacing: "0.1em" }}>🤫 你保守的秘密</div>
+                    <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)", lineHeight: 1.6 }}>{save.mySecret.content}</div>
+                    {save.mySecret.link && <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 4 }}>与真相的关联：{save.mySecret.link}</div>}
+                    {save.mySecret.informant && <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)" }}>知道更多的人：{save.mySecret.informant}</div>}
+                    <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 6, opacity: 0.7 }}>是否公开、何时摊牌，由你决定——KP 不会替你说破</div>
+                  </div>
+                )}
               </div>
             ) : toolTab === "clues" ? (
               /* Clue board — archived clues grouped by location (fork) */
@@ -3620,6 +3716,17 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         );
       })()}
 
+      {/* Backstage reveal entry (after ending fireworks, fork 八期) */}
+      {save.completed && !showFireworks && (
+        <button onClick={() => setShowReveal(true)} style={{
+          position: "absolute", left: 10, bottom: 282, zIndex: 40,
+          width: 44, height: 44, borderRadius: "50%",
+          background: "rgba(150,120,220,0.2)", border: "1px solid rgba(150,120,220,0.4)",
+          color: "rgba(200,180,250,0.95)", fontSize: "calc(16px*var(--app-text-scale,1))",
+          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+        }} title="幕后全貌（结局后解锁）">🎭</button>
+      )}
+
       {/* ═══ Ending Overlay ═══ */}
       {endingData && (
         <div
@@ -3897,6 +4004,55 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             />
           )}
 
+        </div>
+      )}
+
+      {/* ═══ Backstage Reveal (fork 八期A/B — after ending; all secrets + locked talks) ═══ */}
+      {showReveal && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 72,
+          background: "rgba(5,5,10,0.85)", backdropFilter: "blur(8px)",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }} onClick={() => setShowReveal(false)}>
+          <div onClick={e => e.stopPropagation()} style={{
+            width: "min(420px, 100%)", maxHeight: "82vh", overflowY: "auto",
+            background: "radial-gradient(circle at top, rgba(30,25,35,0.98) 0%, rgba(12,10,18,0.99) 100%)",
+            borderRadius: 16, border: "1px solid rgba(190,170,240,0.25)",
+            boxShadow: "0 24px 64px rgba(0,0,0,0.7)", padding: "20px 18px",
+          }}>
+            <div style={{ fontSize: "calc(16px*var(--app-text-scale,1))", fontWeight: 700, color: "rgba(210,190,250,0.95)", letterSpacing: "0.1em", marginBottom: 4 }}>🎭 幕后全貌</div>
+            <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 14 }}>故事已落幕——现在你可以看看每个人守住（或没守住）什么</div>
+
+            <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(190,170,240,0.9)", marginBottom: 6, fontFamily: "monospace", letterSpacing: "0.1em" }}>调查员的秘密</div>
+            {partySecretsView.length === 0 ? (
+              <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 10 }}>（这个世界没有生成个人秘密）</div>
+            ) : partySecretsView.map((s, i) => (
+              <div key={i} style={{ padding: "8px 10px", borderRadius: 8, background: "rgba(150,120,220,0.08)", border: "1px solid rgba(150,120,220,0.18)", marginBottom: 5 }}>
+                <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)", lineHeight: 1.6 }}><span style={{ color: "rgba(190,170,240,0.9)", fontWeight: 600 }}>{s.who}</span>：{s.secret.content}</div>
+                {s.secret.link && <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 3 }}>咬合点：{s.secret.link}{s.secret.informant ? ` · 知情者：${s.secret.informant}` : ""}</div>}
+              </div>
+            ))}
+
+            <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(190,170,240,0.9)", margin: "14px 0 6px", fontFamily: "monospace", letterSpacing: "0.1em" }}>🔒 锁档私聊</div>
+            {(save.lockedLog || []).length === 0 && (lockedLogRef.current.length === 0) ? (
+              <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)" }}>（没有发生私下交谈）</div>
+            ) : [...(save.lockedLog || []), ...lockedLogRef.current.filter(e => !(save.lockedLog || []).some(x => x.id === e.id))].map(e => (
+              <div key={e.id} style={{ padding: "8px 10px", borderRadius: 8, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)", marginBottom: 5 }}>
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(190,170,240,0.8)", marginBottom: 3 }}>{e.day} · {e.who} ↔ {e.npc || "？"}</div>
+                <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)", lineHeight: 1.6 }}>{e.text}</div>
+              </div>
+            ))}
+
+            <button onClick={() => setShowReveal(false)}
+              style={{
+                width: "100%", marginTop: 14, padding: "11px 0", borderRadius: 10,
+                border: "1px solid rgba(190,170,240,0.3)", background: "rgba(150,120,220,0.12)",
+                color: "rgba(210,190,250,0.95)", fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 600,
+                cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.1em",
+              }}>
+              合上这本幕册
+            </button>
+          </div>
         </div>
       )}
 

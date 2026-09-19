@@ -125,6 +125,13 @@ export type EncounterSeed = {
 
 export type RulesEdition = "coc6" | "coc7";
 
+// ── Personal secrets (secret-party mode, fork 八期A) ──
+export type PersonalSecret = {
+  content: string;      // 秘密内容（持有者视角，生成后分配给某位调查员）
+  link: string;         // 与主线真相的咬合点
+  informant?: string;   // 知情 NPC —— 持有者可私下问出更多
+};
+
 export type WorldSkeleton = {
   world: {
     name: string;
@@ -139,6 +146,7 @@ export type WorldSkeleton = {
   encounterPool: EncounterSeed[];
   partyStats: Record<string, CharStats>;
   dmDossier?: DMDossier;
+  personalSecrets?: PersonalSecret[];  // fork 八期A: per-investigator secrets (assigned at save creation)
 };
 
 // ── DM (Dungeon Master) System ──
@@ -257,6 +265,10 @@ export type GameSave = {
   // ── fork: clue board + time passage ──
   clues?: { id: string; location: string; text: string; day: string }[];  // 线索板（按地点归档）
   timeTicks?: number;                // 距上次时段推进的轮数计数
+  // ── fork: secret party (八期A) ──
+  mySecret?: PersonalSecret;                     // 用户的秘密（工具栏可见，摊牌时机由用户决定）
+  agentSecrets?: Record<string, PersonalSecret>; // characterId → 同伴的秘密（KP 可见；用户结局前不可见，幕后页揭晓）
+  lockedLog?: { id: string; who: string; npc?: string; text: string; day: string }[]; // 锁档私聊流（结局揭晓；八期B 填充）
 };
 
 // ── MapWorld (stored in IndexedDB) — world is independent of characters ──
@@ -339,6 +351,7 @@ export type EventScene = {
   topics?: { label: string; skillHint?: string }[]; // fork: NPC talk topics (tappable → fills speech input)
   clues?: string[];                 // fork: key clues gained this round → archived to the clue board
   investigationDone?: boolean;      // fork: KP signals this location's investigation is complete (anti-idling)
+  sideScenes?: { who: string; npc: string; intent?: string; summary?: string }[];  // fork 八期B: KP-directed private scenes (locked)
   affinityDelta?: Record<string, number>;  // character affinity changes
   journalEntry?: string;       // auto-added to journal
   unlocks?: string[];          // node IDs to unlock/discover
@@ -353,6 +366,7 @@ export type StreamMessage = {
   speaker?: string;
   text: string;
   emotion?: string;
+  audience?: string[];  // fork 八期A 骨架（B期启用）：可见名单；undefined = 全员可见，["locked"] = 锁档
 };
 
 // Collect-Resolve-Narrate: a player or companion's declared action+speech per round

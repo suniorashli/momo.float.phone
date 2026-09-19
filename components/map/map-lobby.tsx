@@ -271,10 +271,10 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
 
       // 5. Create initial save with selected characters
       const startNode = renderedMap.l1Nodes[0]?.id || "l1_0";
-      let save = createInitialSave(world.id, startNode, edition);
+      let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
       for (const cid of charIdsSnapshot) {
         const ch = characters.find(c => c.id === cid);
-        save = addAgentToSave(save, cid, ch?.personality || "", edition);
+        save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets);
       }
       const startRegionIdx = 0;
       const discovered: string[] = [startNode];
@@ -299,7 +299,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
 
   // ── Enter World (skip character selection, go straight in) ──
   const handleEnterWorld = (world: MapWorld) => {
-    const save = getLatestSave(world.id) || createInitialSave(world.id, world.renderedMap.l1Nodes[0]?.id || "l1_0", world.skeleton.world.rulesEdition || "coc6");
+    const save = getLatestSave(world.id) || createInitialSave(world.id, world.renderedMap.l1Nodes[0]?.id || "l1_0", world.skeleton.world.rulesEdition || "coc6", world.skeleton.personalSecrets);
     onStartGame(world, save);
   };
 

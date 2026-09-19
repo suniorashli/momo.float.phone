@@ -2,7 +2,7 @@
 // RPG Map Mode — IndexedDB storage
 
 import Dexie from "dexie";
-import type { MapWorld, GameSave, CharacterAgent, StoryDirector, CharStats } from "./map-types";
+import type { MapWorld, GameSave, CharacterAgent, StoryDirector, CharStats, PersonalSecret } from "./map-types";
 import { STAT_LABELS, ALL_STATS, BASE_STATS, lookupDB, type StatKey, type CharSheet } from "./map-types";
 import { buildCoCSheet } from "./coc-sheet";
 import { formatChatTimestamp } from "./llm-prompt-assembler";
@@ -224,10 +224,14 @@ export function deleteSave(id: string): void {
 
 // ── New Game State ──
 
-export function createInitialSave(worldId: string, startNodeId: string, edition: "coc6" | "coc7" = "coc6"): GameSave {
+export function createInitialSave(worldId: string, startNodeId: string, edition: "coc6" | "coc7" = "coc6", personalSecrets?: PersonalSecret[]): GameSave {
   const now = new Date().toISOString();
   const stats = rollStats(edition);
   const maxHp = Math.max(1, maxHpFromStats(stats, edition));
+  // Fork 八期A: deal secrets — last one is the player's, one per companion (skip if not enough)
+  const pool = personalSecrets && personalSecrets.length > 0 ? [...personalSecrets] : [];
+  const mySecret = pool.pop();
+  const agentSecrets: Record<string, PersonalSecret> = {};
   return {
     id: `save_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     worldId,
@@ -243,6 +247,8 @@ export function createInitialSave(worldId: string, startNodeId: string, edition:
     playerSheet: buildCoCSheet(stats, undefined, undefined, edition),
     checkedSkills: [],
     agents: [],
+    mySecret,
+    agentSecrets,
     mainQuestStage: 0,
     usedEncounterIds: [],
     director: createInitialDirector(),
@@ -262,11 +268,18 @@ export function createInitialSave(worldId: string, startNodeId: string, edition:
 }
 
 /** Add a character agent to a save */
-export function addAgentToSave(save: GameSave, characterId: string, personality: string, edition: "coc6" | "coc7" = "coc6"): GameSave {
+export function addAgentToSave(save: GameSave, characterId: string, personality: string, edition: "coc6" | "coc7" = "coc6", pendingSecrets?: PersonalSecret[]): GameSave {
   if (save.agents.some(a => a.characterId === characterId)) return save;
   const p = personality.toLowerCase();
   const stats = rollStatsFromPersonality(p, edition);
   const maxHp = Math.max(1, maxHpFromStats(stats, edition));
+  // Fork 八期A: deal an undealt secret to this companion (player's secret was popped at save creation)
+  let agentSecrets = save.agentSecrets;
+  if (pendingSecrets && pendingSecrets.length > 0) {
+    const secret = pendingSecrets[0];
+    agentSecrets = { ...save.agentSecrets, [characterId]: secret };
+    pendingSecrets.shift();
+  }
   const agent: CharacterAgent = {
     characterId,
     currentNodeId: save.currentNodeId,  // starts at user's location
@@ -283,7 +296,7 @@ export function addAgentToSave(save: GameSave, characterId: string, personality:
     stats,
     sheet: buildCoCSheet(stats, personality, undefined, edition),
   };
-  return { ...save, agents: [...save.agents, agent] };
+  return { ...save, agents: [...save.agents, agent], agentSecrets };
 }
 
 /** Remove a character agent from a save */
