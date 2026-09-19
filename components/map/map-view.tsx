@@ -719,10 +719,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
             companionDecls.push(decl);
             // Fork: companion-chosen skill check — roll it here, result enters the stream before DM resolve
-            const declAgent = save.agents.find(a => {
-              const ch = characters.find(c => c.id === a.characterId);
-              return ch?.name === decl.speaker;
-            });
+            // (declAgent already resolved by characterId above — reuse it)
             if (decl.skillCheck && declAgent) {
               const edition2 = is7th ? "coc7" as const : "coc6" as const;
               const check = skillCheckValue(declAgent.sheet, decl.skillCheck, declAgent.stats, edition2);
