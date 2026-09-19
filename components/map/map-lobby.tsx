@@ -143,6 +143,8 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [genError, setGenError] = useState<{ reason: string; raw: string } | null>(null);
+  // Fork: staged world-gen progress (shown on the generating world card)
+  const [genProgress, setGenProgress] = useState<{ id: string; step: string } | null>(null);
 
   // DM prompt editor state
   const [dmPrompts, setDmPrompts] = useState(() => {
@@ -241,7 +243,11 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   // ── Create World (background generation) ──
   const handleCreate = async () => {
     // Fork fix: whole-txt import alone is enough — module text becomes the description
-    const effectiveDesc = description.trim() || (moduleText.trim() ? `${moduleName || "导入模组"}：${moduleText.slice(0, 300)}` : "");
+    // Fork fix2: when a module txt IS imported, it takes priority as the primary material;
+    // the description box degrades to a "supplementary requirements" note for the KP.
+    const effectiveDesc = moduleText.trim()
+      ? `${moduleName || "导入模组"}：${moduleText.slice(0, 300)}`
+      : description.trim();
     if (!effectiveDesc || isGenerating) return;
     setIsGenerating(true);
     setError(null);
@@ -329,7 +335,10 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         return;
       }
       const vars = {
-        world_desc: effectiveDesc,
+        // world_desc carries user intent only — the module txt (if any) is the primary material via module_text
+        world_desc: moduleText.trim()
+          ? (description.trim() ? `${description.trim()}\n（注：已导入模组《${moduleName || "导入模组"}》为主素材，以上描述作为补充要求，与模组冲突时以模组为准）` : `${moduleName || "导入模组"}模组跑团`)
+          : effectiveDesc,
         tone: tone || "自由发挥",
         region_count: String(regionCount),
         main_quest_type: mainQuestType || "自由发挥",
@@ -338,7 +347,14 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         ...(moduleText.trim() ? { module_text: `\n# 导入的模组背景（TRPG模组设定，世界必须严格按此素材构建）\n${moduleText.trim()}` } : {}),
       };
       // (kpStyleInstruction hoisted to the top of handleCreate — assembly path uses it too)
-      const skeleton = await generateWorldSkeleton(effectiveDesc, [], apiConfig, vars);
+      // (module txt present → userDescription carries intent only; the module itself rides in vars.module_text)
+      const skeleton = await generateWorldSkeleton(
+        moduleText.trim() ? (description.trim() || "按导入的模组跑团") : effectiveDesc,
+        [],
+        apiConfig,
+        vars,
+        (step) => setGenProgress({ id: worldId, step }),
+      );
 
       const resp = await fetch("/countries.geo.json");
       const geoData: GeoJSONData = await resp.json();
@@ -389,6 +405,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
       saveGame(save);
 
       setWorlds(loadMapWorlds());
+      setGenProgress(null);
     } catch (e) {
       // Mark as failed + surface reason and raw LLM output in a dialog.
       const reason = e instanceof Error ? e.message : String(e);
@@ -396,6 +413,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
       const failed: MapWorld = { ...placeholder, status: "failed", statusMessage: reason, failureRaw: raw, updatedAt: new Date().toISOString() };
       saveMapWorld(failed);
       setWorlds(loadMapWorlds());
+      setGenProgress(null);
       setGenError({ reason, raw });
     }
   };
@@ -472,7 +490,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
             <div key={w.id} style={{ ...S.card, opacity: w.status === "generating" ? 0.6 : 1 }}>
               <div style={{ fontSize: "calc(15px*var(--app-text-scale,1))", fontWeight: 600, marginBottom: 4 }}>
                 {w.skeleton.world.name || "新世界"}
-                {w.status === "generating" && <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(255,200,100,0.6)", marginLeft: 8, fontWeight: 400 }}>生成中...</span>}
+                {w.status === "generating" && <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(255,200,100,0.6)", marginLeft: 8, fontWeight: 400 }}>{genProgress && genProgress.id === w.id ? `生成中 · ${genProgress.step}` : "生成中..."}</span>}
                 {w.status === "failed" && <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(255,100,80,0.7)", marginLeft: 8, fontWeight: 400 }}>生成失败</span>}
               </div>
               {w.status === "failed" && w.statusMessage && (
@@ -543,6 +561,11 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                   color: "#d8cbb8", fontSize: "calc(13px*var(--app-text-scale,1))", fontFamily: "inherit", lineHeight: 1.7,
                   resize: "vertical", outline: "none", boxSizing: "border-box",
                 }} />
+              {moduleText.trim() && (
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,200,100,0.55)", marginTop: 6, lineHeight: 1.5 }}>
+                  📄 已导入模组《{moduleName || "导入模组"}》——世界将严格按模组素材生成；此处描述仅作为补充要求（可留空）
+                </div>
+              )}
             </div>
 
             {/* ── Divider ── */}
