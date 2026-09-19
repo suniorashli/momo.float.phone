@@ -240,9 +240,24 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
 
   // ── Create World (background generation) ──
   const handleCreate = async () => {
-    if (!description.trim() || isGenerating) return;
+    // Fork fix: whole-txt import alone is enough — module text becomes the description
+    const effectiveDesc = description.trim() || (moduleText.trim() ? `${moduleName || "导入模组"}：${moduleText.slice(0, 300)}` : "");
+    if (!effectiveDesc || isGenerating) return;
     setIsGenerating(true);
     setError(null);
+    const userIdentity = resolveUserIdentity(undefined, "adventure");
+    // KP narration style — computed once, used by both assembly & LLM paths (fork fix: was declared after first use)
+    const kpStyleInstruction = [
+      kpNarrStyle === "日式文风" ? "叙述文风：日式——克制的物哀感、留白与日常细节中的违和，人物称谓和句式贴近轻小说翻译腔" : "",
+      kpNarrStyle === "美式文风" ? "叙述文风：美式——直白硬朗的黑色小说笔调，短句与俚语，动作场面干脆利落" : "",
+      kpNarrStyle === "国风" ? "叙述文风：国风——白话中带古典意韵，环境描写重意境，克苏鲁元素用志怪笔法呈现" : "",
+      kpNarrStyle === "西式古典" ? "叙述文风：西式古典——维多利亚哥特腔调，繁复庄重的长句，恰如洛夫克拉夫特本人的原文" : "",
+      kpNarrStyle === "民国风" ? "叙述文风：民国风——上世纪二三十年代白话文的味道，新旧词汇交杂，时代感优先" : "",
+      kpArtStyle === "电影风" ? "艺术风格：电影风——注重镜头感，叙述像运镜：远景/特写/切镜，用画面语言营造恐怖" : "",
+      kpArtStyle === "文学风" ? "艺术风格：文学风——注重语言细腻的描述，修辞考究，感官细节层层铺陈" : "",
+      kpArtStyle === "游戏风" ? "艺术风格：游戏风——注重趣味和反馈，叙述节奏轻快，及时回应玩家的行动并给足存在感" : "",
+      kpArtStyle === "纪实风" ? "艺术风格：纪实风——注重发生在当下的感觉，像亲历者的第一手记录，冷静、具体、有时间感" : "",
+    ].filter(Boolean).join("\n");
 
     const apiConfigs = loadApiConfigs();
     const bindings = loadBindingConfig();
@@ -256,7 +271,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
     const worldId = generateWorldId();
     const placeholder: MapWorld = {
       id: worldId,
-      skeleton: { world: { name: description.slice(0, 20) + "...", lore: "" }, mapInput: { map_settings: { header: "", title: "" }, regions: [] }, richRegions: [], mainQuest: { id: "", title: "", type: "main", synopsis: "", triggerRegion: "", stages: [] }, sideQuests: [], npcs: [], encounterPool: [], partyStats: {} },
+      skeleton: { world: { name: effectiveDesc.slice(0, 20) + "...", lore: "" }, mapInput: { map_settings: { header: "", title: "" }, regions: [] }, richRegions: [], mainQuest: { id: "", title: "", type: "main", synopsis: "", triggerRegion: "", stages: [] }, sideQuests: [], npcs: [], encounterPool: [], partyStats: {} },
       renderedMap: { l1Nodes: [], l2Nodes: [], l3Nodes: [], rivers: [], regionBoundaries: [], mapSettings: { header: "", title: "" } } as unknown as import("@/lib/map-engine").MapGenerationOutput,
       createdAt: now,
       updatedAt: now,
@@ -275,7 +290,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
     try {
       // Fork 九期: reviewed module core → code-only assembly (no LLM world-gen call)
       if (moduleCore) {
-        const skeleton = assembleSkeletonFromCore(moduleCore, description.slice(0, 20));
+        const skeleton = assembleSkeletonFromCore(moduleCore, effectiveDesc.slice(0, 20));
         const resp = await fetch("/countries.geo.json");
         const geoData: GeoJSONData = await resp.json();
         const renderedMap = generateMap(skeleton.mapInput, geoData);
@@ -293,7 +308,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
         // Fork 十二期: player persona import (assembly path)
         try {
-          save.myPersona = await importInvestigator(userIdentity?.name || "调查员", `（用户本人）${description.slice(0, 400)}`, skeleton, save.mySecret, apiConfig);
+          save.myPersona = await importInvestigator(userIdentity?.name || "调查员", `（用户本人）${effectiveDesc.slice(0, 400)}`, skeleton, save.mySecret, apiConfig);
         } catch { /* fallback */ }
         // Fork 十一期: persona import (module-core assembly path — same adaptation as LLM path)
         for (const cid of charIdsSnapshot) {
@@ -314,7 +329,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         return;
       }
       const vars = {
-        world_desc: description,
+        world_desc: effectiveDesc,
         tone: tone || "自由发挥",
         region_count: String(regionCount),
         main_quest_type: mainQuestType || "自由发挥",
@@ -322,19 +337,8 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         difficulty: difficulty || "适中",
         ...(moduleText.trim() ? { module_text: `\n# 导入的模组背景（TRPG模组设定，世界必须严格按此素材构建）\n${moduleText.trim()}` } : {}),
       };
-      // KP narration style stays attached to the generated world (persists into runtime DM prompts)
-      const kpStyleInstruction = [
-        kpNarrStyle === "日式文风" ? "叙述文风：日式——克制的物哀感、留白与日常细节中的违和，人物称谓和句式贴近轻小说翻译腔" : "",
-        kpNarrStyle === "美式文风" ? "叙述文风：美式——直白硬朗的黑色小说笔调，短句与俚语，动作场面干脆利落" : "",
-        kpNarrStyle === "国风" ? "叙述文风：国风——白话中带古典意韵，环境描写重意境，克苏鲁元素用志怪笔法呈现" : "",
-        kpNarrStyle === "西式古典" ? "叙述文风：西式古典——维多利亚哥特腔调，繁复庄重的长句，恰如洛夫克拉夫特本人的原文" : "",
-        kpNarrStyle === "民国风" ? "叙述文风：民国风——上世纪二三十年代的白话文味道，新旧词汇交杂，时代感优先" : "",
-        kpArtStyle === "电影风" ? "艺术风格：电影风——注重镜头感，叙述像运镜：远景/特写/切镜，用画面语言营造恐怖" : "",
-        kpArtStyle === "文学风" ? "艺术风格：文学风——注重语言细腻的描述，修辞考究，感官细节层层铺陈" : "",
-        kpArtStyle === "游戏风" ? "艺术风格：游戏风——注重趣味和反馈，叙述节奏轻快，及时回应玩家的行动并给足存在感" : "",
-        kpArtStyle === "纪实风" ? "艺术风格：纪实风——注重发生在当下的感觉，像亲历者的第一手记录，冷静、具体、有时间感" : "",
-      ].filter(Boolean).join("\n");
-      const skeleton = await generateWorldSkeleton(description, [], apiConfig, vars);
+      // (kpStyleInstruction hoisted to the top of handleCreate — assembly path uses it too)
+      const skeleton = await generateWorldSkeleton(effectiveDesc, [], apiConfig, vars);
 
       const resp = await fetch("/countries.geo.json");
       const geoData: GeoJSONData = await resp.json();
@@ -364,7 +368,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
       let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
       // Fork 十二期: player persona import too (reviewed on first world entry; falls back silently)
       try {
-        save.myPersona = await importInvestigator(userIdentity?.name || "调查员", `（用户本人）${description.slice(0, 400)}`, skeleton, save.mySecret, apiConfig);
+        save.myPersona = await importInvestigator(userIdentity?.name || "调查员", `（用户本人）${effectiveDesc.slice(0, 400)}`, skeleton, save.mySecret, apiConfig);
       } catch { /* fallback: no persona */ }
       // Fork 十一期: persona import — adapt each companion to the module era (LLM, fallback to raw card)
       for (const cid of charIdsSnapshot) {
@@ -963,7 +967,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
             {/* ── Create button (ritual activation) ── */}
             <button className="tome-ritual"
               onClick={handleCreate}
-              disabled={!description.trim() || isGenerating}
+              disabled={(!description.trim() && !moduleText.trim() && !moduleCore) || isGenerating}
               style={{
                 width: "100%", padding: "15px 0", borderRadius: 10,
                 border: isGenerating ? "1px solid rgba(255,255,255,0.05)" : "1px solid rgba(200,160,100,0.3)",
