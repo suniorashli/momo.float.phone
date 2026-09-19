@@ -13,6 +13,7 @@ import { ADVENTURE_THEMES } from "./map-text-stream";
 import { loadCharacters } from "@/lib/character-storage";
 import { loadApiConfigs, loadBindingConfig, resolveBinding, resolveUserIdentity, resolveAuxiliaryApiConfig } from "@/lib/settings-storage";
 import { expandEvent, companionDeclare, resolveRound, rollD100, resolveCheckStat, ROLL_LABELS, formatGameTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
+import { skillCheckValue, resolveAttack, rollExpr, dbFromStats, findWeaponMention, LEVEL_LABEL, type RollLevel } from "@/lib/coc-sheet";
 import { STAT_LABELS, ALL_STATS } from "@/lib/map-types";
 import MapRenderer from "./map-renderer";
 import MapTextStream from "./map-text-stream";
@@ -454,13 +455,14 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           hp: save.hp,
           maxHp: save.maxHp,
           san: playerSan,
-          items: save.director.keyItems,
+          items: [...(save.playerSheet?.equipment || []), ...save.director.keyItems],
           playerStats: save.playerStats,
+          playerSheet: save.playerSheet,
           companions: save.agents
             .filter(a => a.currentNodeId === save.currentNodeId)
             .map(a => {
               const ch = characters.find(c => c.id === a.characterId);
-              return { name: ch?.name || a.characterId, affinity: a.affinity, stats: a.stats, status: "" };
+              return { name: ch?.name || a.characterId, affinity: a.affinity, stats: a.stats, status: a.sheet ? a.sheet.occupation : "", sheet: a.sheet };
             }),
         },
         pacing: save.pacing,
@@ -590,6 +592,32 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             setCompletedCompanions(completedCompanionsRef.current);
 
             companionDecls.push(decl);
+            // CoC6 combat: companion attack actions auto-resolve weapon dice
+            const declAgent = save.agents.find(a => {
+              const ch = characters.find(c => c.id === a.characterId);
+              return ch?.name === decl.speaker;
+            });
+            if (declAgent?.sheet) {
+              const weapon = findWeaponMention(`${decl.action} ${decl.speech}`, declAgent.sheet.weapons);
+              if (weapon) {
+                const skillVal = declAgent.sheet.skills[weapon.skill] ?? 25;
+                const db = dbFromStats(declAgent.stats);
+                const atk = resolveAttack(skillVal, weapon.name, weapon.damage, db, 30, "敌方");
+                if (atk.attackLevel === "fail" || atk.attackLevel === "fumble") {
+                  const missMsg: StreamMessage = { id: mkId(), type: "system", text: `⚔️ ${decl.speaker}以${weapon.name}攻击（${weapon.skill}${skillVal}%）：D100=${atk.attackRoll} → ${atk.attackLevel === "fumble" ? "大失败" : "失败"}` };
+                  pushMessages(missMsg);
+                  streamRef.current = [...streamRef.current, missMsg];
+                } else if (atk.dodged) {
+                  const missMsg: StreamMessage = { id: mkId(), type: "system", text: `⚔️ ${decl.speaker}以${weapon.name}攻击（${weapon.skill}${skillVal}%）→ 对方闪避成功，未造成伤害` };
+                  pushMessages(missMsg);
+                  streamRef.current = [...streamRef.current, missMsg];
+                } else {
+                  const dmgMsg: StreamMessage = { id: mkId(), type: "system", text: `⚔️ ${decl.speaker}以${weapon.name}命中（${atk.attackLevel === "crit" ? "大成功·贯穿" : LEVEL_LABEL[atk.attackLevel as RollLevel]}）：伤害 ${atk.damage}（${atk.damageDetail || "—"}）` };
+                  pushMessages(dmgMsg);
+                  streamRef.current = [...streamRef.current, dmgMsg];
+                }
+              }
+            }
             if (decl.speech && decl.speech !== "……") {
               const msg: StreamMessage = { id: mkId(), type: "character", speaker: decl.speaker, text: decl.speech, emotion: decl.emotion };
               pushMessages(msg);
@@ -889,7 +917,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         } else {
           // Event finished — run growth roll
           setLastFailedAction(null);          pushMessages({ id: mkId(), type: "system", text: "—— 事件结束 ——" });
-          const grownSave = runGrowthRollRef.current(newSave);
+          const grownSave = runGrowthRollRef.current(newSave, [...usedSkillsRef.current]);
           if (grownSave !== newSave) persistSave(grownSave);
           setCurrentChoices(null);
           setInEvent(false);
@@ -900,7 +928,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       } else {
         // Event finished — run growth roll
         pushMessages({ id: mkId(), type: "system", text: "—— 事件结束 ——" });
-        const grownSave = runGrowthRoll(newSave);
+        const grownSave = runGrowthRoll(newSave, [...usedSkillsRef.current]);
         if (grownSave !== newSave) persistSave(grownSave);
         setCurrentChoices(null);
         setInEvent(false);
@@ -927,42 +955,49 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   }, [eventContext, accumulatedEvent, save, currentNode, activeEventMeta, persistSave, allNodes, characters, pushMessages, pushSceneToStream, userIdentity, skeleton]);
 
   // ── Growth roll ref (defined below, used by handlePlayerAction) ──
-  const runGrowthRollRef = useRef<(s: GameSave) => GameSave>((s) => s);
+  const runGrowthRollRef = useRef<(s: GameSave, skills?: string[]) => GameSave>((s) => s);
+  // Skills used during the current event (ref so growth roll after resolve can read them)
+  const usedSkillsRef = useRef<Set<string>>(new Set());
 
-  // ── Growth roll — called when event ends, for each checked stat ──
-  const runGrowthRoll = useCallback((currentSave: GameSave): GameSave => {
-    const checked = currentSave.checkedStats || [];
-    if (checked.length === 0) return currentSave;
+  // ── Growth roll — CoC6 style: for each skill used this event, roll D100 > skill → +1D10 ──
+  const runGrowthRoll = useCallback((currentSave: GameSave, skills?: string[]): GameSave => {
+    const used = skills && skills.length > 0 ? skills : (currentSave.checkedSkills || []);
+    if (used.length === 0) return currentSave;
 
-    const newStats = { ...currentSave.playerStats };
+    const newSheet = currentSave.playerSheet ? { ...currentSave.playerSheet, skills: { ...currentSave.playerSheet.skills } } : undefined;
     const growthMessages: string[] = [];
+    const noGrowMessages: string[] = [];
 
-    for (const stat of checked) {
-      // CoC6 base attributes are 15-105 percentile; growth baseline = 40% of INT (≈skill usage difficulty)
-      const current = newStats[stat] || Math.round(((newStats.int as number) || 50) * 0.4);
-      const roll = Math.floor(Math.random() * 100) + 1;
-      if (roll > current) {
-        // Growth! +1d10
-        const gain = Math.floor(Math.random() * 10) + 1;
-        const newVal = Math.min(99, current + gain);
-        (newStats as Record<string, number>)[stat] = newVal;
-        growthMessages.push(`${STAT_LABELS[stat]} ${current}→${newVal} (+${gain})`);
+    if (newSheet) {
+      for (const skillName of used) {
+        const current = newSheet.skills[skillName];
+        if (typeof current !== "number") continue; // attribute fallback or base-only skill — no growth track
+        const roll = Math.floor(Math.random() * 100) + 1;
+        if (roll > current) {
+          const gain = Math.floor(Math.random() * 10) + 1;
+          const newVal = Math.min(99, current + gain);
+          newSheet.skills[skillName] = newVal;
+          growthMessages.push(`${skillName} ${current}→${newVal} (+${gain})`);
+        } else {
+          noGrowMessages.push(skillName);
+        }
       }
     }
 
     if (growthMessages.length > 0) {
       pushMessages({
         id: mkId(), type: "system",
-        text: `📈 属性成长：${growthMessages.join("、")}`,
+        text: `📈 技能成长：${growthMessages.join("、")}`,
       });
-    } else if (checked.length > 0) {
+    }
+    if (noGrowMessages.length > 0) {
       pushMessages({
         id: mkId(), type: "system",
-        text: `属性成长 roll 失败，本次无成长`,
+        text: `技能成长 roll 未通过：${noGrowMessages.join("、")}`,
       });
     }
 
-    return { ...currentSave, playerStats: newStats, checkedStats: [] };
+    return { ...currentSave, playerSheet: newSheet, checkedSkills: [] };
   }, [pushMessages]);
   runGrowthRollRef.current = runGrowthRoll;
 
@@ -1024,10 +1059,12 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       return;
     }
 
-    // CoC6: stat_check may carry a CoC skill name (侦查/聆听/图书馆使用/…) — resolve to an attribute
-    const resolved = resolveCheckStat(choice.statCheck.stat);
-    const statKey = resolved.key;
-    const label = resolved.label;
+    // CoC6: resolve check to trained skill value (preferred) or attribute fallback
+    const checkName = choice.statCheck.stat;
+    const playerCheck = skillCheckValue(save.playerSheet, checkName, save.playerStats);
+    const label = playerCheck.source;
+    const statKey = resolveCheckStat(checkName).key; // kept for animation/legacy display
+    const usedSkills = new Set<string>(save.checkedSkills || []);
     const rollResults: string[] = [];
 
     // Helper: run dice overlay for one person
@@ -1058,14 +1095,14 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       });
     };
 
-    // Determine who rolls
+    // Determine who rolls — value comes from each person's own sheet (trained skill > base > attribute)
     const playerName = userIdentity?.name || "你";
     const candidates: { name: string; statValue: number; isPlayer: boolean }[] = [
-      { name: playerName, statValue: save.playerStats[statKey] || 50, isPlayer: true },
+      { name: playerName, statValue: playerCheck.value, isPlayer: true },
     ];
     for (const a of save.agents) {
       const ch = characters.find(c => c.id === a.characterId);
-      if (ch) candidates.push({ name: ch.name, statValue: a.stats[statKey] || 50, isPlayer: false });
+      if (ch) candidates.push({ name: ch.name, statValue: skillCheckValue(a.sheet, checkName, a.stats).value, isPlayer: false });
     }
 
     let chosen: typeof candidates[0];
@@ -1104,19 +1141,45 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       });
     }
 
+    // Record skill usage for growth roll (strip conversion suffix like 侦查(智力))
+    if (playerCheck.source) {
+      usedSkills.add(playerCheck.source.replace(/（异象）|\(基础\)/, "").replace(/\(.*\)$/, ""));
+      usedSkillsRef.current.add(playerCheck.source.replace(/（异象）|\(基础\)/, "").replace(/\(.*\)$/, ""));
+    }
+
     // Roll
     const result = await rollFor(chosen.name, chosen.statValue, chosen.isPlayer);
     const success = result.level !== "fail" && result.level !== "fumble";
     const levelLabel = result.level === "crit" ? "大成功！" : result.level === "hard" ? "困难成功" : result.level === "success" ? "成功" : result.level === "fumble" ? "大失败！" : "失败";
     const rollMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${chosen.name} · ${choice.label}（${label} ${chosen.statValue}）`, text: `D100 = ${result.roll} → ${levelLabel}`, emotion: success ? "success" : "fail" };
     pushMessages(rollMsg);
+
+    // CoC6 combat: weapon-skill checks auto-resolve damage (attack vs dodge, DB applied)
+    const weapon = save.playerSheet?.weapons?.find(w => w.skill === checkName) || null;
+    if (weapon && success && chosen.isPlayer) {
+      const db = dbFromStats(save.playerStats);
+      // Hostile dodge value unknown — let KP decide dodge via narration; use a modest 30 for auto-resolution
+      const atk = resolveAttack(chosen.statValue, weapon.name, weapon.damage, db, 30, "敌方");
+      if (atk.dodged) {
+        const missMsg: StreamMessage = { id: mkId(), type: "system", text: `⚔️ ${chosen.name}以${weapon.name}攻击 → 对方闪避成功，未造成伤害` };
+        pushMessages(missMsg);
+        streamRef.current = [...streamRef.current, missMsg];
+      } else {
+        const dmgMsg: StreamMessage = { id: mkId(), type: "system", text: `⚔️ ${chosen.name}以${weapon.name}命中（${atk.attackLevel === "crit" ? "大成功·贯穿" : LEVEL_LABEL[atk.attackLevel as RollLevel]}）：伤害 ${atk.damage}（${atk.damageDetail || "—"}）` };
+        pushMessages(dmgMsg);
+        streamRef.current = [...streamRef.current, dmgMsg];
+      }
+    }
     // Manually sync ref so companionDeclare sees the roll result (pushMessages is async setState)
     streamRef.current = [...streamRef.current, rollMsg];
     rollResults.push(`${chosen.name}掷骰：D100=${result.roll}（${label}${chosen.statValue}）→${levelLabel}`);
 
+    // Persist used skills for later growth roll
+    persistSave({ ...save, checkedSkills: [...usedSkills] });
+
     // Proceed — skip display since roll messages already shown
     handlePlayerAction(choice.label, true);
-  }, [handlePlayerAction, save, characters, userIdentity, pushMessages]);
+  }, [handlePlayerAction, save, characters, userIdentity, pushMessages, persistSave]);
 
   // ── Handle free text input ──
   const handleFreeInput = useCallback(() => {
@@ -2468,8 +2531,23 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                 })()}
               </div>
             ) : toolTab === "bag" ? (
-              /* Bag tab */
+              /* Bag tab — CoC6 character sheet */
               <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
+                {/* Occupation header */}
+                <div style={{ padding: "8px 10px", borderRadius: 8, background: "var(--c-adv-choice-bg)", border: "1px solid var(--c-adv-input-border)", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <div style={{ fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 700, color: "var(--c-adv-accent)" }}>{save.playerSheet?.occupation || "调查员"}</div>
+                    <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 2 }}>
+                      信用评级 {save.playerSheet?.creditRating ?? "?"} · DB {dbFromStats(save.playerStats || { str: 50, con: 50, pow: 50, dex: 50, app: 50, siz: 50, int: 50, edu: 50, san: 50, lck: 50 })}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", lineHeight: 1.6 }}>
+                    <div>HP {save.hp}/{save.maxHp}</div>
+                    <div>MP {Math.floor((save.playerStats?.pow || 50) / 25)}</div>
+                    <div>SAN {typeof save.san === "number" ? save.san : "?"}/99</div>
+                  </div>
+                </div>
+
                 {/* Player stats */}
                 <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 8, fontFamily: "monospace", letterSpacing: "0.1em" }}>属性</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
@@ -2485,8 +2563,54 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                   ))}
                 </div>
 
+                {/* Trained skills */}
+                {save.playerSheet && (
+                  <>
+                    <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 8, fontFamily: "monospace", letterSpacing: "0.1em" }}>技能（本职+兴趣）</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 14 }}>
+                      {Object.entries(save.playerSheet.skills)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([name, val]) => (
+                          <div key={name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", borderRadius: 6, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)" }}>
+                            <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)", flex: 1 }}>{name}</span>
+                            <div style={{ width: 90, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                              <div style={{ width: `${Math.min(100, val)}%`, height: "100%", background: "var(--c-adv-accent-dim)" }} />
+                            </div>
+                            <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-accent)", fontFamily: "monospace", minWidth: 26, textAlign: "right" }}>{val}</span>
+                          </div>
+                        ))}
+                    </div>
+
+                    {/* Weapons */}
+                    {save.playerSheet.weapons.length > 0 && (
+                      <>
+                        <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 8, fontFamily: "monospace", letterSpacing: "0.1em" }}>武器</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 14 }}>
+                          {save.playerSheet.weapons.map((w, i) => (
+                            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 8px", borderRadius: 6, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)" }}>
+                              <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)" }}>{w.name} <span style={{ color: "var(--c-adv-text-muted)", fontSize: "calc(9px*var(--app-text-scale,1))">{w.range ? `· ${w.range}` : ""}{w.shots ? `· ${w.shots}发` : ""}</span></span>
+                              <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent)", fontFamily: "monospace" }}>
+                                {save.playerSheet!.skills[w.skill] ?? 25}% · {w.damage}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </>
+                )}
+
                 {/* Items */}
-                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 8, fontFamily: "monospace", letterSpacing: "0.1em" }}>物品栏</div>
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 8, fontFamily: "monospace", letterSpacing: "0.1em" }}>随身物品</div>
+                {save.playerSheet?.equipment?.length ? (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                    {save.playerSheet.equipment.map((item, i) => (
+                      <span key={i} style={{ padding: "3px 8px", borderRadius: 12, background: "var(--c-adv-choice-bg)", border: "1px solid var(--c-adv-input-border)", fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-dim)" }}>{item}</span>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", margin: "8px 0", fontFamily: "monospace", letterSpacing: "0.1em" }}>调查获得</div>
                 {save.director.keyItems.length === 0 ? (
                   <div style={{ fontSize: "calc(12px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", textAlign: "center", padding: "20px 0" }}>
                     空空如也~
@@ -2565,13 +2689,18 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                       border: "1px solid var(--c-adv-input-border)",
                       background: "var(--c-adv-input-bg)",
                     }}>
-                      <div style={{ fontWeight: 500, fontSize: "calc(12px*var(--app-text-scale,1))", color: "var(--c-adv-text)" }}>{name}</div>
+                      <div style={{ fontWeight: 500, fontSize: "calc(12px*var(--app-text-scale,1))", color: "var(--c-adv-text)" }}>
+                        {name}
+                        {a.sheet && <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", marginLeft: 6, fontWeight: 400 }}>{a.sheet.occupation} · 信用{a.sheet.creditRating}{a.sheet.weapons.length ? ` · ${a.sheet.weapons.map(w => w.name).join("、")}` : ""}</span>}
+                      </div>
                       <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 2 }}>
                         📍 {nodeName} · HP {a.hp}/{a.maxHp} · SAN {typeof a.san === "number" ? a.san : (a.stats?.san ?? "?")} · ❤️ {a.affinity}
                       </div>
-                      <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 1 }}>
-                        {ALL_STATS.map(k => `${STAT_LABELS[k]}${a.stats?.[k] ?? "?"}`).join(" ")}
-                      </div>
+                      {a.sheet && (
+                        <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 3, lineHeight: 1.5 }}>
+                          {Object.entries(a.sheet.skills).sort((x, y) => y[1] - x[1]).slice(0, 6).map(([sn, sv]) => `${sn}${sv}`).join(" ")}…
+                        </div>
+                      )}
                     </div>
                   );
                 })}

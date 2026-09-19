@@ -203,6 +203,8 @@ export type GameSave = {
   maxHp: number;
   san?: number;                  // CoC6 SAN (optional — old saves may lack it)
   playerStats: CharStats;
+  playerSheet?: CharSheet;       // CoC6 sheet: occupation/skills/weapons/equipment
+  checkedSkills?: string[];      // skills used this event (for CoC skill growth rolls)
 
   // Companion agents — each moves independently
   agents: CharacterAgent[];
@@ -262,6 +264,16 @@ export type CharacterAgent = {
   journal: JournalEntry[];
   affinity: number;            // towards user, 0-100
   stats: CharStats;
+  sheet?: CharSheet;           // CoC6 sheet for this companion
+};
+
+// ── CoC character sheet (fork: occupation/skills/weapons) ──
+export type CharSheet = {
+  occupation: string;             // 职业（调查员为默认）
+  creditRating: number;           // 信用评级
+  skills: Record<string, number>; // 已训练技能 → 当前值（含信用评级）
+  weapons: { name: string; skill: string; damage: string; range?: string; shots?: number; malf?: number }[];
+  equipment: string[];            // 随身物品
 };
 
 // ── Agent Skill System (like 小卷's skills) ──

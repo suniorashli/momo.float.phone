@@ -3,7 +3,8 @@
 
 import Dexie from "dexie";
 import type { MapWorld, GameSave, CharacterAgent, StoryDirector, CharStats } from "./map-types";
-import { STAT_LABELS, ALL_STATS, BASE_STATS, lookupDB, type StatKey } from "./map-types";
+import { STAT_LABELS, ALL_STATS, BASE_STATS, lookupDB, type StatKey, type CharSheet } from "./map-types";
+import { buildCoCSheet } from "./coc-sheet";
 import { formatChatTimestamp } from "./llm-prompt-assembler";
 import { kvGet, kvSet, kvRemove, registerKvMigration, registerDynamicPrefix } from "./kv-db";
 import { DEFAULT_ADVENTURE_BILINGUAL_PROMPT } from "./bilingual-prompt-defaults";
@@ -139,11 +140,13 @@ export async function hydrateMapStorage(): Promise<void> {
         maxHp,
         hp: Math.min(s.hp ?? maxHp, maxHp),
         san: typeof s.san === "number" ? s.san : Math.min(stats.san, 99),
+        playerSheet: s.playerSheet || buildCoCSheet(stats),
+        checkedSkills: s.checkedSkills || [],
       };
       patched.agents = (patched.agents || []).map(a => {
         const aStats = ensureCoC6Stats(a.stats);
         const aMaxHp = Math.max(1, maxHpFromStats(aStats));
-        return { ...a, stats: aStats, maxHp: aMaxHp, hp: Math.min(a.hp ?? aMaxHp, aMaxHp), san: typeof a.san === "number" ? a.san : Math.min(aStats.san, 99) };
+        return { ...a, stats: aStats, maxHp: aMaxHp, hp: Math.min(a.hp ?? aMaxHp, aMaxHp), san: typeof a.san === "number" ? a.san : Math.min(aStats.san, 99), sheet: a.sheet || buildCoCSheet(aStats) };
       });
       _savesCache[i] = patched;
       mapDb.saves.put(patched).catch(() => undefined);
@@ -234,6 +237,8 @@ export function createInitialSave(worldId: string, startNodeId: string): GameSav
     maxHp,
     san: Math.min(stats.san, 99),
     playerStats: stats,
+    playerSheet: buildCoCSheet(stats),
+    checkedSkills: [],
     agents: [],
     mainQuestStage: 0,
     usedEncounterIds: [],
@@ -273,6 +278,7 @@ export function addAgentToSave(save: GameSave, characterId: string, personality:
     journal: [],
     affinity: 15,
     stats,
+    sheet: buildCoCSheet(stats, personality),
   };
   return { ...save, agents: [...save.agents, agent] };
 }

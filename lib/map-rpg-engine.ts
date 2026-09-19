@@ -550,13 +550,14 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 【COC氛围与判定】
 - 恐怖靠暗示而非血浆：不明声响、反常细节、旁人的欲言又止
 - 暴力遭遇战是危险且往往致命的——逃走、躲避、求助通常比战斗更明智
-- 属性检定：选项可以带stat_check，系统会抽一个人掷D100（≤属性值=成功）
-  · stat可用：力量str/体质con/意志pow/敏捷dex/外貌app/体型siz/智力int/教育edu/幸运lck
-  · 也可写COC技能名，如{"stat":"侦查"}、{"stat":"图书馆使用"}、{"stat":"心理学"}、{"stat":"潜行"}——系统会换算成对应属性掷骰
-  · 指定谁掷：stat_check里加who字段，如{"stat":"侦查","who":"{{user}}"}——用于只适合特定人的行动
-  · 不指定who：系统随机抽一个人掷——此时选项描述必须是全队通用的（如"小心搜索房间"）
+- 检定（D100 ≤技能值/属性值=成功）：stat_check里优先写COC技能名，调查员拥有训练过的技能值（见[队伍状态]的技能列表），系统按技能值掷骰；没训练的技能按基础值掷
+  · 技能示例：{"stat":"侦查"}、{"stat":"图书馆使用"}、{"stat":"心理学"}、{"stat":"潜行"}、{"stat":"手枪"}（用武器攻击时用手枪/小刀/拳击等对应技能）
+  · 属性直检也可：力量str/体质con/意志pow/敏捷dex/幸运lck
+  · 指定谁掷：stat_check里加who字段，如{"stat":"侦查","who":"{{user}}"}
+  · 不指定who：系统随机抽一个人掷——选项描述必须是全队通用的
+- 战斗伤害：系统会自动按武器伤害骰结算（含DB伤害加值），你在narration里描述伤口与后果即可，不必自己编伤害数字；lost里只报"SAN-N"等状态损耗
 - SAN损失：目睹恐怖场景时在lost里用"SAN-5"（玩家）或"角色名:SAN-3"扣理智，配合narration描写恐惧与幻觉
-- HP损失格式同旧例："HP-15"或"小雪:HP-10"
+- HP损失由系统按武器骰自动结算："HP-15"或"小雪:HP-10"仅在系统外需要额外扣血时使用（如坠落、咒术）
 
 【NPC扮演】
 - NPC有自己的性格和秘密（见密档），对话要体现性格
@@ -617,7 +618,8 @@ export type DMContext = {
     san?: number;
     items: string[];
     playerStats?: import("./map-types").CharStats;
-    companions: { name: string; affinity: number; stats: import("./map-types").CharStats; status: string }[];
+    playerSheet?: import("./map-types").CharSheet;
+    companions: { name: string; affinity: number; stats: import("./map-types").CharStats; status: string; sheet?: import("./map-types").CharSheet }[];
   };
   declarations?: import("./map-types").Declaration[];
   pacing?: "relaxed" | "normal" | "fast";
@@ -730,7 +732,9 @@ ${ctx.npcName ? `NPC：${ctx.npcName}（${ctx.npcPersonality}）` : ""}
 ${ctx.partyStatus ? `HP：${ctx.partyStatus.hp}/${ctx.partyStatus.maxHp}${typeof ctx.partyStatus.san === "number" ? `\nSAN：${ctx.partyStatus.san}/99` : ""}
 物品栏：${ctx.partyStatus.items.join("、") || "空"}
 玩家属性：${ctx.partyStatus.playerStats ? formatStats(ctx.partyStatus.playerStats) : "?"}
-${ctx.partyStatus.companions.map(c => `${c.name}：好感${c.affinity} ${formatStats(c.stats)}${c.status ? ` [${c.status}]` : ""}`).join("；")}` : "无数据"}
+玩家职业：${ctx.partyStatus.playerSheet?.occupation || "调查员"} · 信用评级${ctx.partyStatus.playerSheet?.creditRating ?? "?"}${ctx.partyStatus.playerSheet?.weapons?.length ? ` · 武器：${ctx.partyStatus.playerSheet.weapons.map(w => `${w.name}(${w.damage})`).join("、")}` : ""}
+玩家技能：${ctx.partyStatus.playerSheet ? Object.entries(ctx.partyStatus.playerSheet.skills).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => `${k}${v}`).join("/") : "无"}
+${ctx.partyStatus.companions.map(c => `${c.name}：${c.sheet?.occupation || "调查员"} 好感${c.affinity} HP${"?"} ${formatStats(c.stats)}${c.sheet?.weapons?.length ? ` 武器:${c.sheet.weapons.map(w => `${w.name}(${w.damage})`).join("、")}` : ""}${c.status ? ` [${c.status}]` : ""}`).join("；")}` : "无数据"}
 
 # 规则（COC第6版）
 属性（百分值）：力量str/体质con/意志pow/敏捷dex/外貌app/体型siz/智力int/教育edu/理智san/幸运lck。属性成长由系统自动处理，DM不要在gained里加属性。
@@ -1140,11 +1144,12 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是COC跑团的守秘人（KP）。
 - 没人移动 → 留空""
 - 如果队伍分散在不同地点，narration中按地点分段描述各自的经历。
 
-【COC判定】选项可以带stat_check，系统会抽一个人掷D100（≤属性值=成功）：
-- 属性键：力量str/体质con/意志pow/敏捷dex/外貌app/体型siz/智力int/教育edu/幸运lck
-- 也可写COC技能名：侦查/聆听/图书馆使用/心理学/潜行/话术/急救……系统自动换算到对应属性
+【COC判定】选项可以带stat_check，系统按技能值/属性值掷D100（≤值=成功）：
+- 优先写COC技能名：侦查/聆听/图书馆使用/心理学/潜行/话术/急救/手枪/小刀/拳击……调查员训练过的技能有自己的技能值，系统按它掷骰
+- 属性直检也可：力量str/体质con/意志pow/敏捷dex/幸运lck
 - 指定谁掷：stat_check里加who，如{"stat":"话术","who":"{{user}}"}——用于只适合特定人的行动
 - 不指定who：随机抽人掷——选项描述必须全队通用
+- 战斗伤害：系统自动按武器伤害骰结算（含DB），narration只描述后果
 - SAN损失：lost里用"SAN-5"或"角色名:SAN-3"扣理智，配合恐惧描写
 
 【旁白排版】
