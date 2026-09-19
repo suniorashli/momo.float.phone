@@ -558,6 +558,7 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 - 战斗伤害：系统会自动按武器伤害骰结算（含DB伤害加值），你在narration里描述伤口与后果即可，不必自己编伤害数字；lost里只报"SAN-N"等状态损耗
 - SAN损失：目睹恐怖场景时在lost里用"SAN-5"（玩家）或"角色名:SAN-3"扣理智，配合narration描写恐惧与幻觉
 - HP损失由系统按武器骰自动结算："HP-15"或"小雪:HP-10"仅在系统外需要额外扣血时使用（如坠落、咒术）
+- 辅助检定（系统按钮触发，急救/意志清醒/精神分析，由队内数值最高者掷骰）：你会在对话流里看到结果（如"🤝 急救 · 小雪：成功 → HP+1"），叙述里承认这些效果；不要在选项里重复提供同类行动
 
 【NPC扮演】
 - NPC有自己的性格和秘密（见密档），对话要体现性格
@@ -628,6 +629,8 @@ export type DMContext = {
   // Fork: combat round + madness state (shown to KP)
   combat?: { round: number; initiative: string[]; currentIndex: number; hostiles: { name: string; dex: number; hp: number; maxHp: number; notes?: string }[] };
   madness?: { temporary?: { rounds: number; symptom: string }; permanent?: boolean };
+  // Fork: KP narration style instruction (extracted from world lore 【KP风格指令】 block)
+  kpStyle?: string;
 };
 
 /** Truncate an array of strings from the oldest, keeping newest within token budget */
@@ -723,7 +726,7 @@ ${(ctx.mainQuestStages || []).map((s, i) => {
     : "\n叙事节奏：适中（每个主线阶段经过10-12轮互动后再设advance=true，平衡推进和探索）";
 
   return `# 世界：${ctx.worldLore}
-${mapBlock}
+${ctx.kpStyle ? `\n【叙述风格指令】（KP必须遵守）\n${ctx.kpStyle}\n` : ""}${mapBlock}
 ${dmBlock}${dirBlock}${questBlock}${pacingHint}
 
 ${ctx.combat ? `\n# 战斗轮

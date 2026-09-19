@@ -67,6 +67,9 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   const [mainQuestType, setMainQuestType] = useState("");
   const [npcCount, setNpcCount] = useState(12);
   const [difficulty, setDifficulty] = useState("");
+  // KP narration style (per world) — injected into scene/resolve prompts
+  const [kpNarrStyle, setKpNarrStyle] = useState("");
+  const [kpArtStyle, setKpArtStyle] = useState("");
   // TRPG module background text (imported from txt) — injected into world-gen prompt
   const [moduleText, setModuleText] = useState("");
   const [moduleName, setModuleName] = useState("");
@@ -226,6 +229,18 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         difficulty: difficulty || "适中",
         ...(moduleText.trim() ? { module_text: `\n# 导入的模组背景（TRPG模组设定，世界必须严格按此素材构建）\n${moduleText.trim()}` } : {}),
       };
+      // KP narration style stays attached to the generated world (persists into runtime DM prompts)
+      const kpStyleInstruction = [
+        kpNarrStyle === "日式文风" ? "叙述文风：日式——克制的物哀感、留白与日常细节中的违和，人物称谓和句式贴近轻小说翻译腔" : "",
+        kpNarrStyle === "美式文风" ? "叙述文风：美式——直白硬朗的黑色小说笔调，短句与俚语，动作场面干脆利落" : "",
+        kpNarrStyle === "国风" ? "叙述文风：国风——白话中带古典意韵，环境描写重意境，克苏鲁元素用志怪笔法呈现" : "",
+        kpNarrStyle === "西式古典" ? "叙述文风：西式古典——维多利亚哥特腔调，繁复庄重的长句，恰如洛夫克拉夫特本人的原文" : "",
+        kpNarrStyle === "民国风" ? "叙述文风：民国风——上世纪二三十年代的白话文味道，新旧词汇交杂，时代感优先" : "",
+        kpArtStyle === "电影风" ? "艺术风格：电影风——注重镜头感，叙述像运镜：远景/特写/切镜，用画面语言营造恐怖" : "",
+        kpArtStyle === "文学风" ? "艺术风格：文学风——注重语言细腻的描述，修辞考究，感官细节层层铺陈" : "",
+        kpArtStyle === "游戏风" ? "艺术风格：游戏风——注重趣味和反馈，叙述节奏轻快，及时回应玩家的行动并给足存在感" : "",
+        kpArtStyle === "纪实风" ? "艺术风格：纪实风——注重发生在当下的感觉，像亲历者的第一手记录，冷静、具体、有时间感" : "",
+      ].filter(Boolean).join("\n");
       const skeleton = await generateWorldSkeleton(description, [], apiConfig, vars);
 
       const resp = await fetch("/countries.geo.json");
@@ -240,6 +255,13 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         createdAt: now,
         updatedAt: new Date().toISOString(),
       };
+      // Persist KP narration style into the world skeleton lore prefix (fork: per-world KP style)
+      if (kpStyleInstruction) {
+        world.skeleton = {
+          ...world.skeleton,
+          world: { ...world.skeleton.world, lore: `${world.skeleton.world.lore}\n\n【KP风格指令】${kpStyleInstruction}` },
+        };
+      }
       saveMapWorld(world);
 
       // 5. Create initial save with selected characters
@@ -420,8 +442,8 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
 
             {/* ── Tag sections ── */}
             {([
-              { label: "风格基调", value: tone, setter: setTone, tags: ["轻松", "黑暗", "恐怖", "浪漫", "史诗", "悬疑", "幽默", "治愈", "热血", "荒诞"] },
-              { label: "主线类型", value: mainQuestType, setter: setMainQuestType, tags: ["拯救世界", "解开谜团", "寻找宝藏", "复仇之路", "生存逃脱", "王位之争", "阴谋揭露", "守护家园"] },
+              { label: "风格基调", value: tone, setter: setTone, tags: ["轻松", "黑暗", "恐怖", "浪漫", "悬疑", "幽默", "治愈", "热血", "荒诞", "日常怪谈"] },
+              { label: "主线类型", value: mainQuestType, setter: setMainQuestType, tags: ["解开谜团", "阴谋揭露", "失踪案", "禁忌知识", "邪教调查", "古宅探秘", "小镇怪事", "寻找宝藏", "生存逃脱", "恋爱喜剧"] },
               { label: "难度", value: difficulty, setter: setDifficulty, tags: ["轻松冒险", "适中", "硬核生存", "地狱难度"] },
             ] as const).map(section => (
               <div key={section.label} style={{ marginBottom: 14 }}>
@@ -468,6 +490,65 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                 </div>
               </div>
             ))}
+
+            {/* ── Divider ── */}
+            <div style={{ height: 1, background: "linear-gradient(90deg, transparent, rgba(200,160,100,0.15), transparent)", margin: "2px 0 14px" }} />
+
+            {/* ── KP narration style ── */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(200,160,100,0.5)", marginBottom: 7, letterSpacing: "0.08em" }}>
+                KP 叙述风格
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {(["日式文风", "美式文风", "国风", "西式古典", "民国风"] as const).map(t => {
+                  const active = kpNarrStyle === t;
+                  return (
+                    <button key={t} className="tome-seal"
+                      onClick={() => setKpNarrStyle(active ? "" : t)}
+                      style={{
+                        padding: "6px 12px", borderRadius: 6,
+                        border: `1px solid ${active ? "rgba(200,160,100,0.45)" : "rgba(200,160,100,0.1)"}`,
+                        background: active ? "linear-gradient(135deg, rgba(200,160,100,0.18), rgba(200,160,100,0.08))" : "rgba(0,0,0,0.3)",
+                        color: active ? "#e8d0a0" : "rgba(255,255,255,0.35)",
+                        fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                        transition: "all 0.2s ease",
+                      }}>
+                      {t}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 7 }}>
+                <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(200,160,100,0.5)", marginBottom: 7, letterSpacing: "0.08em" }}>
+                  艺术风格
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                  {([
+                    ["电影风", "注重镜头感"],
+                    ["文学风", "注重语言细腻的描述"],
+                    ["游戏风", "注重趣味和反馈"],
+                    ["纪实风", "注重发生在当下的感觉"],
+                  ] as const).map(([t, hint]) => {
+                    const active = kpArtStyle === t;
+                    return (
+                      <button key={t} className="tome-seal"
+                        onClick={() => setKpArtStyle(active ? "" : t)}
+                        title={hint}
+                        style={{
+                          padding: "6px 12px", borderRadius: 6,
+                          border: `1px solid ${active ? "rgba(200,160,100,0.45)" : "rgba(200,160,100,0.1)"}`,
+                          background: active ? "linear-gradient(135deg, rgba(200,160,100,0.18), rgba(200,160,100,0.08))" : "rgba(0,0,0,0.3)",
+                          color: active ? "#e8d0a0" : "rgba(255,255,255,0.35)",
+                          fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                          transition: "all 0.2s ease",
+                        }}>
+                        {t}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
 
             {/* ── Divider ── */}
             <div style={{ height: 1, background: "linear-gradient(90deg, transparent, rgba(200,160,100,0.15), transparent)", margin: "2px 0 14px" }} />

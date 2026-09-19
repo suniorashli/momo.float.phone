@@ -465,6 +465,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         richRegions: skeleton.richRegions,
         sideQuestStatus: sqStatus,
         mainQuestNodeMap: mqNodeMap,
+        kpStyle: (skeleton.world.lore.match(/【KP风格指令】([\s\S]*)/)?.[1] || "").trim() || undefined,
         partyStatus: {
           hp: save.hp,
           maxHp: save.maxHp,
@@ -1118,6 +1119,55 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     pushMessages({ id: mkId(), type: "system", text: "⚔️ 战斗结束（手动）" });
   }, [save, persistSave, pushMessages]);
 
+  // ── CoC6 support checks: first aid / sanity recovery / psychoanalysis ──
+  const runSupportCheck = useCallback((skillName: "急救" | "意志" | "精神分析") => {
+    const playerName2 = userIdentity?.name || "你";
+    const candidates: { name: string; val: number; isPlayer: boolean }[] = [
+      { name: playerName2, val: skillCheckValue(save.playerSheet, skillName, save.playerStats).value, isPlayer: true },
+      ...save.agents.map(a => ({ name: charName(a.characterId), val: skillCheckValue(a.sheet, skillName, a.stats).value, isPlayer: false })),
+    ];
+    const best = [...candidates].sort((a, b) => b.val - a.val)[0];
+    const r = rollD100(best.val);
+    const levelLabel = r.level === "crit" ? "大成功" : r.level === "hard" ? "困难成功" : r.level === "success" ? "成功" : r.level === "fumble" ? "大失败" : "失败";
+    const success = r.level !== "fail" && r.level !== "fumble";
+
+    // Effects per CoC6
+    let effectText = "";
+    const newSave = { ...save };
+    if (skillName === "急救") {
+      if (success) {
+        const heal = r.level === "crit" ? 3 : 1;
+        newSave.hp = Math.min(newSave.maxHp, newSave.hp + heal);
+        effectText = `HP +${heal}（${newSave.hp}/${newSave.maxHp}）`;
+      } else effectText = "止血失败，伤势未好转";
+    } else if (skillName === "意志") {
+      // sanity recovery attempt (CoC6: success → SAN+1d6; simplified per check)
+      if (success) {
+        const gain = Math.floor(Math.random() * 6) + 1;
+        const sanBefore = typeof newSave.san === "number" ? newSave.san : newSave.playerStats.san;
+        newSave.san = Math.min(99, sanBefore + gain);
+        effectText = `SAN +${gain}（理智回升至 ${newSave.san}）`;
+      } else effectText = "未能平复心绪";
+    } else if (skillName === "精神分析") {
+      // psychoanalysis: success → SAN +1d3; can also calm temporary madness
+      if (success) {
+        const gain = Math.floor(Math.random() * 3) + 1;
+        const sanBefore = typeof newSave.san === "number" ? newSave.san : newSave.playerStats.san;
+        newSave.san = Math.min(99, sanBefore + gain);
+        let extra = "";
+        if (newSave.madness?.temporary) {
+          newSave.madness = { ...newSave.madness, temporary: undefined };
+          extra = "，临时疯狂被安抚";
+        }
+        effectText = `SAN +${gain}（理智回升至 ${newSave.san}）${extra}`;
+      } else effectText = "对方仍困在自己的恐惧里";
+    }
+    persistSave(newSave);
+    const msg: StreamMessage = { id: mkId(), type: "roll", speaker: `🤝 ${skillName} · ${best.name}（${skillName}${best.val}）`, text: `D100 = ${r.roll} → ${levelLabel} → ${effectText}`, emotion: success ? "success" : "fail" };
+    pushMessages(msg);
+    streamRef.current = [...streamRef.current, msg];
+  }, [save, persistSave, pushMessages, userIdentity, characters]);
+
   // ── Handle event exit — send as player action so DM knows ──
   const handleEventExit = useCallback(async () => {
     const playerName = userIdentity?.name || "你";
@@ -1225,7 +1275,13 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     let chosen: typeof candidates[0];
     const specifiedWho = choice.statCheck!.who;
 
-    if (specifiedWho) {
+    if (specifiedWho === "best") {
+      // Fork: support-check convention — the party member with the highest check value rolls
+      chosen = [...candidates].sort((a, b) => b.statValue - a.statValue)[0];
+      const pickerMsg: StreamMessage = { id: mkId(), type: "system", text: `🎲 ${checkName} 由队伍中数值最高者掷骰：${chosen.name}（${chosen.statValue}）` };
+      pushMessages(pickerMsg);
+      streamRef.current = [...streamRef.current, pickerMsg];
+    } else if (specifiedWho) {
       // DM specified who rolls
       chosen = candidates.find(c =>
         specifiedWho === "你" ? c.isPlayer : c.name === specifiedWho
@@ -2365,6 +2421,37 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                     ))}
                   </div>
                 ))}
+
+                {/* Support checks: first aid / sanity recovery / psychoanalysis — best-valued member rolls */}
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 6, fontFamily: "monospace", letterSpacing: "0.1em" }}>辅助检定（队内最高值者掷骰）</div>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    <button onClick={() => runSupportCheck("急救")}
+                      style={{
+                        flex: 1, padding: "8px 0", borderRadius: 8,
+                        border: "1px solid rgba(120,200,140,0.3)", background: "rgba(120,200,140,0.08)",
+                        color: "rgba(150,220,170,0.9)", fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                      }}>
+                      💊 急救
+                    </button>
+                    <button onClick={() => runSupportCheck("意志")}
+                      style={{
+                        flex: 1, padding: "8px 0", borderRadius: 8,
+                        border: "1px solid rgba(140,100,200,0.3)", background: "rgba(140,100,200,0.08)",
+                        color: "rgba(180,150,230,0.9)", fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                      }}>
+                      🧠 清醒检定
+                    </button>
+                    <button onClick={() => runSupportCheck("精神分析")}
+                      style={{
+                        flex: 1, padding: "8px 0", borderRadius: 8,
+                        border: "1px solid rgba(120,180,220,0.3)", background: "rgba(120,180,220,0.08)",
+                        color: "rgba(150,200,240,0.9)", fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                      }}>
+                      🛋 精神分析
+                    </button>
+                  </div>
+                </div>
 
                 {/* Madness state */}
                 {(save.madness?.temporary || save.madness?.permanent) && (
