@@ -13,7 +13,7 @@ import { ADVENTURE_THEMES } from "./map-text-stream";
 import { loadCharacters } from "@/lib/character-storage";
 import { loadApiConfigs, loadBindingConfig, resolveBinding, resolveUserIdentity, resolveAuxiliaryApiConfig } from "@/lib/settings-storage";
 import { expandEvent, companionDeclare, resolveRound, rollD100, resolveCheckStat, ROLL_LABELS, formatGameTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
-import { skillCheckValue, resolveAttack, rollExpr, dbFromStats, findWeaponMention, LEVEL_LABEL, type RollLevel } from "@/lib/coc-sheet";
+import { skillCheckValue, resolveAttack, rollExpr, dbFromStats, findWeaponMention, LEVEL_LABEL, sanityLossVerdict, rollTemporaryMadness, buildInitiative, makeHostile, type RollLevel, type HostileCombatant } from "@/lib/coc-sheet";
 import { STAT_LABELS, ALL_STATS } from "@/lib/map-types";
 import MapRenderer from "./map-renderer";
 import MapTextStream from "./map-text-stream";
@@ -69,6 +69,20 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   const completedCompanionsRef = useRef(completedCompanions);
   completedCompanionsRef.current = completedCompanions;
   const [freeMode, setFreeMode] = useState(false);
+  // CoC6 combat round (fork)
+  const [combatOpen, setCombatOpen] = useState(false);
+  const [combatInput, setCombatInput] = useState<{ name: string; dex: string; hp: string }>({ name: "", dex: "", hp: "" });
+  const [combatQueue, setCombatQueue] = useState<{ name: string; dex: number; hp: number; maxHp: number; notes?: string }[]>([]);
+  const showCombat = !!save.combat && !save.combat.ended;
+  const combatCurrentToken = save.combat && !save.combat.ended ? save.combat.initiative[save.combat.currentIndex] : null;
+  const tokenLabel = (token: string): string => {
+    if (token === "player") return userIdentity?.name || "你";
+    if (token.startsWith("comp:")) {
+      const ch = characters.find(c => c.id === token.slice(5));
+      return ch?.name || token.slice(5);
+    }
+    return token.slice(9); // hostile:
+  };
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [freeModeReplying, setFreeModeReplying] = useState(false);
   const [worldTheme, setWorldTheme] = useState<WorldTheme>(() => loadWorldTheme(world.id));
@@ -458,6 +472,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           items: [...(save.playerSheet?.equipment || []), ...save.director.keyItems],
           playerStats: save.playerStats,
           playerSheet: save.playerSheet,
+          combat: save.combat && !save.combat.ended ? { round: save.combat.round, initiative: save.combat.initiative, currentIndex: save.combat.currentIndex, hostiles: save.combat.hostiles } : undefined,
+          madness: save.madness,
           companions: save.agents
             .filter(a => a.currentNodeId === save.currentNodeId)
             .map(a => {
@@ -748,10 +764,20 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       // Apply HP change
       const newHp = hpChange ? Math.max(0, save.hp + hpChange) : save.hp;
       if (hpChange) pushMessages({ id: mkId(), type: "system", text: `HP ${hpChange}（${save.hp}→${newHp}）` });
-      // Apply SAN change
+      // Apply SAN change + CoC6 madness check
       if (sanChange) {
+        const sanBefore = newSan;
         newSan = Math.max(0, newSan + sanChange);
         pushMessages({ id: mkId(), type: "system", text: `SAN ${sanChange}（理智降至 ${newSan}）` });
+        const verdict = sanityLossVerdict(Math.abs(sanChange), sanBefore);
+        const madness = newSaveMadness(sanBefore, verdict, newSan);
+        if (madness.temporary) {
+          pushMessages({ id: mkId(), type: "system", text: `🌀 SAN单场损失≥5 —— 临时疯狂发作：${madness.temporary.symptom}（持续 ${madness.temporary.rounds} 轮）` });
+          save.madness = madness.raw;
+        } else if (madness.permanent) {
+          pushMessages({ id: mkId(), type: "system", text: `💀 SAN归零 —— 永久疯狂。${playerName}的心智永远地碎裂了。` });
+          save.madness = madness.raw;
+        }
       }
       if (lostItems.length) updatedDirector.keyItems = updatedDirector.keyItems.filter(i => !lostItems.includes(i));
       if (ev.npcsInvolved?.length) updatedDirector.keyNpcsMet = [...new Set([...updatedDirector.keyNpcsMet, ...ev.npcsInvolved])];
@@ -842,6 +868,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         currentNodeType: newNodeType,
         hp: newHp,
         san: newSan,
+        madness: save.madness,
         playerStats: newPlayerStats,
         agents: updatedAgents,
         director: updatedDirector,
@@ -959,6 +986,23 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   // Skills used during the current event (ref so growth roll after resolve can read them)
   const usedSkillsRef = useRef<Set<string>>(new Set());
 
+  // ── CoC6 madness builder (helper) ──
+  const newSaveMadness = (sanBefore: number, verdict: { temporaryMadness: boolean; goneInsane: boolean }, sanAfter: number): { temporary?: { rounds: number; symptom: string }; permanent?: boolean; raw: GameSave["madness"] } => {
+    const base = save.madness || { phobias: [], log: [] };
+    if (verdict.goneInsane) {
+      return { permanent: true, raw: { ...base, permanent: true, log: [...base.log, { day: formatGameTime(save.gameDay, save.gameTime), text: `SAN归零，永久疯狂` }] } };
+    }
+    if (verdict.temporaryMadness) {
+      const rounds = Math.floor(Math.random() * 10) + 1;
+      const symptom = rollTemporaryMadness();
+      return {
+        temporary: { rounds, symptom },
+        raw: { ...base, temporary: { rounds, symptom }, log: [...base.log, { day: formatGameTime(save.gameDay, save.gameTime), text: `临时疯狂：${symptom}` }] },
+      };
+    }
+    return { raw: base };
+  };
+
   // ── Growth roll — CoC6 style: for each skill used this event, roll D100 > skill → +1D10 ──
   const runGrowthRoll = useCallback((currentSave: GameSave, skills?: string[]): GameSave => {
     const used = skills && skills.length > 0 ? skills : (currentSave.checkedSkills || []);
@@ -1000,6 +1044,79 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     return { ...currentSave, playerSheet: newSheet, checkedSkills: [] };
   }, [pushMessages]);
   runGrowthRollRef.current = runGrowthRoll;
+
+  // ── CoC6 combat round actions ──
+  const startCombat = useCallback((hostiles: { name: string; dex: number; hp: number; notes?: string }[]) => {
+    if (hostiles.length === 0) return;
+    const initiative = buildInitiative(
+      save.playerStats.dex,
+      save.agents.map(a => ({ characterId: a.characterId, dex: a.stats.dex })),
+      hostiles.map(h => ({ name: h.name, dex: h.dex })),
+    );
+    const startIdx = initiative.findIndex(t => t === "player");
+    const combat: GameSave["combat"] = {
+      round: 1,
+      initiative,
+      currentIndex: 0,
+      hostiles,
+      hostileIndex: startIdx >= 0 ? startIdx : 0,
+      playerDamageDealt: {},
+    };
+    persistSave({ ...save, combat });
+    setCombatOpen(false);
+    pushMessages({ id: mkId(), type: "system", text: `⚔️ 战斗开始！先攻顺序：${initiative.map(tokenLabel).join(" → ")}` });
+  }, [save, persistSave, pushMessages, characters, userIdentity]);
+
+  /** Apply damage to a hostile, advance turn after each action. */
+  const dealDamageToHostile = useCallback((hostileName: string, dmg: number) => {
+    if (!save.combat || save.combat.ended) return;
+    const combat = { ...save.combat, hostiles: save.combat.hostiles.map(h => h.name === hostileName ? { ...h, hp: Math.max(0, h.hp - dmg) } : h) };
+    const dead = combat.hostiles.find(h => h.name === hostileName && h.hp <= 0);
+    if (dead) {
+      pushMessages({ id: mkId(), type: "system", text: `☠️ ${hostileName} 倒下了` });
+      combat.initiative = combat.initiative.filter(t => t !== `hostile:${hostileName}`);
+      if (combat.currentIndex >= combat.initiative.length) combat.currentIndex = 0;
+    }
+    const anyAlive = combat.hostiles.some(h => h.hp > 0);
+    if (!anyAlive) {
+      combat.ended = true;
+      pushMessages({ id: mkId(), type: "system", text: "⚔️ 战斗结束" });
+      persistSave({ ...save, combat });
+      return;
+    }
+    persistSave({ ...save, combat });
+  }, [save, persistSave, pushMessages]);
+
+  /** Advance to next actor; wrap → round+1. */
+  const advanceCombatTurn = useCallback(() => {
+    if (!save.combat || save.combat.ended) return;
+    const combat = { ...save.combat };
+    // Temporary madness counts down per round
+    const madness = save.madness;
+    let roundIncr = false;
+    combat.currentIndex += 1;
+    if (combat.currentIndex >= combat.initiative.length) {
+      combat.currentIndex = 0;
+      combat.round += 1;
+      roundIncr = true;
+    }
+    if (roundIncr && madness?.temporary) {
+      const roundsLeft = madness.temporary.rounds - 1;
+      const updatedMadness = roundsLeft <= 0
+        ? { ...madness, temporary: undefined }
+        : { ...madness, temporary: { ...madness.temporary, rounds: roundsLeft } };
+      persistSave({ ...save, combat, madness: updatedMadness });
+      if (roundsLeft <= 0) pushMessages({ id: mkId(), type: "system", text: `🌀 临时疯狂症状缓解，${userIdentity?.name || "你"}恢复了自控` });
+      return;
+    }
+    persistSave({ ...save, combat });
+  }, [save, persistSave, pushMessages, userIdentity]);
+
+  const endCombat = useCallback(() => {
+    if (!save.combat) return;
+    persistSave({ ...save, combat: { ...save.combat, ended: true } });
+    pushMessages({ id: mkId(), type: "system", text: "⚔️ 战斗结束（手动）" });
+  }, [save, persistSave, pushMessages]);
 
   // ── Handle event exit — send as player action so DM knows ──
   const handleEventExit = useCallback(async () => {
@@ -1675,6 +1792,66 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             border-color: rgba(200,160,100,0.3) !important;
           }
         `}</style>
+          {/* ── CoC6 combat round entry ── */}
+          {!save.completed && !freeMode && (
+            <div style={{ display: "flex", gap: 5, marginBottom: 5 }}>
+              {!showCombat ? (
+                <button onClick={() => setCombatOpen(true)}
+                  style={{
+                    flex: 1, padding: "8px 0", borderRadius: 8,
+                    border: "1px solid rgba(200,80,80,0.25)",
+                    background: "rgba(200,80,80,0.08)",
+                    color: "rgba(230,120,110,0.9)",
+                    fontSize: "calc(12px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                  }}>
+                  <span style={{ fontSize: "calc(14px*var(--app-text-scale,1))" }}>⚔️</span> 开始战斗轮
+                </button>
+              ) : (
+                <div style={{
+                  flex: 1, padding: "7px 10px", borderRadius: 8,
+                  border: "1px solid rgba(200,80,80,0.3)", background: "rgba(200,80,80,0.1)",
+                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+                  fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(230,130,120,0.9)",
+                }}>
+                  <span style={{ fontFamily: "monospace", letterSpacing: "0.05em" }}>
+                    ⚔️ 第{save.combat!.round}轮 · {combatCurrentToken ? `${tokenLabel(combatCurrentToken)}行动` : "—"}
+                  </span>
+                  <button onClick={advanceCombatTurn}
+                    style={{
+                      padding: "5px 10px", borderRadius: 6, border: "1px solid rgba(200,80,80,0.3)",
+                      background: "rgba(0,0,0,0.25)", color: "inherit",
+                      fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                    }}>
+                    下一位 →
+                  </button>
+                </div>
+              )}
+              {showCombat && (
+                <button onClick={() => setCombatOpen(true)}
+                  style={{
+                    padding: "8px 12px", borderRadius: 8,
+                    border: "1px solid rgba(200,80,80,0.25)", background: "rgba(200,80,80,0.08)",
+                    color: "rgba(230,120,110,0.9)", fontSize: "calc(12px*var(--app-text-scale,1))",
+                    cursor: "pointer", fontFamily: "inherit", flexShrink: 0,
+                  }}>
+                  ⚔️
+                </button>
+              )}
+              {showCombat && (
+                <button onClick={endCombat}
+                  style={{
+                    padding: "8px 12px", borderRadius: 8,
+                    border: "1px solid rgba(255,255,255,0.12)", background: "transparent",
+                    color: "rgba(255,255,255,0.45)", fontSize: "calc(12px*var(--app-text-scale,1))",
+                    cursor: "pointer", fontFamily: "inherit", flexShrink: 0,
+                  }}>
+                  结束
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Retry button after API error (shows above choices) */}
           {inEvent && !freeMode && lastFailedAction && currentChoices && currentChoices.length > 0 && !eventContinueLoading && (
             <button onClick={() => {
@@ -2118,6 +2295,173 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ CoC6 Combat Round Panel ═══ */}
+      {combatOpen && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 58,
+          background: "rgba(5,5,10,0.7)", backdropFilter: "blur(6px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          padding: 20,
+        }} onClick={() => setCombatOpen(false)}>
+          <div onClick={e => e.stopPropagation()} style={{
+            width: "min(400px, 100%)", maxHeight: "80vh", overflowY: "auto",
+            background: "var(--c-adv-panel-bg)", borderRadius: 16,
+            border: "1px solid rgba(200,80,80,0.25)",
+            boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
+            padding: "18px 16px",
+          }}>
+            <div style={{ fontSize: "calc(15px*var(--app-text-scale,1))", fontWeight: 700, color: "rgba(230,130,120,0.95)", marginBottom: 4, letterSpacing: "0.05em" }}>⚔️ 战斗轮</div>
+            <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
+              {showCombat ? "按先攻顺序行动。你的攻击检定照常掷骰，伤害骰由系统自动结算；结算出的伤害点面板上的 -5/-10/-20 记到目标身上。" : "按 KP 叙事填写敌方（名字、敏捷、HP），系统按敏捷排先攻开始战斗轮。"}
+            </div>
+
+            {/* Active combat state */}
+            {showCombat && save.combat && (
+              <>
+                <div style={{ padding: "8px 10px", borderRadius: 8, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)", marginBottom: 12 }}>
+                  <div style={{ fontSize: "calc(12px*var(--app-text-scale,1))", color: "var(--c-adv-text)", marginBottom: 6 }}>
+                    第 <span style={{ color: "var(--c-adv-accent)", fontFamily: "monospace" }}>{save.combat.round}</span> 轮 · 当前行动：
+                    <span style={{ color: "rgba(230,130,120,0.95)", fontWeight: 600 }}>{combatCurrentToken ? tokenLabel(combatCurrentToken) : "—"}</span>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    {save.combat.initiative.map((t, i) => (
+                      <span key={i} style={{
+                        padding: "3px 8px", borderRadius: 10, fontSize: "calc(10px*var(--app-text-scale,1))",
+                        background: i === save.combat!.currentIndex ? "rgba(200,80,80,0.25)" : "var(--c-adv-input-bg)",
+                        border: `1px solid ${i === save.combat!.currentIndex ? "rgba(200,80,80,0.5)" : "var(--c-adv-input-border)"}`,
+                        color: i === save.combat!.currentIndex ? "rgba(230,130,120,0.95)" : "var(--c-adv-text-muted)",
+                      }}>
+                        {tokenLabel(t)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Hostiles with damage ledger */}
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 6, fontFamily: "monospace", letterSpacing: "0.1em" }}>敌方状态</div>
+                {save.combat.hostiles.filter(h => h.hp > 0).map(h => (
+                  <div key={h.name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 8, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)", marginBottom: 5 }}>
+                    <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)", flex: 1 }}>
+                      {h.name}
+                      {h.notes ? <span style={{ color: "var(--c-adv-text-muted)", fontSize: "calc(9px*var(--app-text-scale,1))", marginLeft: 4 }}>{h.notes}</span> : null}
+                    </span>
+                    <div style={{ width: 70, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                      <div style={{ width: `${(h.hp / h.maxHp) * 100}%`, height: "100%", background: "rgba(220,90,80,0.8)" }} />
+                    </div>
+                    <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(230,130,120,0.9)", fontFamily: "monospace", minWidth: 36, textAlign: "right" }}>{h.hp}/{h.maxHp}</span>
+                    {[5, 10, 20].map(d => (
+                      <button key={d} onClick={() => dealDamageToHostile(h.name, d)}
+                        style={{
+                          padding: "3px 6px", borderRadius: 5, border: "1px solid rgba(200,80,80,0.25)",
+                          background: "rgba(200,80,80,0.08)", color: "rgba(230,130,120,0.9)",
+                          fontSize: "calc(9px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                        }}>
+                        -{d}
+                      </button>
+                    ))}
+                  </div>
+                ))}
+
+                {/* Madness state */}
+                {(save.madness?.temporary || save.madness?.permanent) && (
+                  <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 8, background: "rgba(140,100,200,0.08)", border: "1px solid rgba(140,100,200,0.25)" }}>
+                    <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(180,150,230,0.9)", marginBottom: 3, fontFamily: "monospace", letterSpacing: "0.1em" }}>疯狂状态</div>
+                    <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)", lineHeight: 1.5 }}>
+                      {save.madness.permanent ? "💀 永久疯狂 —— 心智已碎裂" : save.madness.temporary ? `🌀 临时疯狂（剩余 ${save.madness.temporary.rounds} 轮）：${save.madness.temporary.symptom}` : ""}
+                    </div>
+                  </div>
+                )}
+
+                <button onClick={() => { advanceCombatTurn(); }}
+                  style={{
+                    width: "100%", marginTop: 12, padding: "11px 0", borderRadius: 10,
+                    border: "1px solid rgba(200,80,80,0.35)", background: "rgba(200,80,80,0.15)",
+                    color: "rgba(230,130,120,0.95)", fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 600,
+                    cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.1em",
+                  }}>
+                  下一位行动 →
+                </button>
+                <button onClick={() => setCombatOpen(false)}
+                  style={{
+                    width: "100%", marginTop: 8, padding: "10px 0", borderRadius: 10,
+                    border: "1px solid var(--c-adv-input-border)", background: "transparent",
+                    color: "var(--c-adv-text-dim)", fontSize: "calc(12px*var(--app-text-scale,1))",
+                    cursor: "pointer", fontFamily: "inherit",
+                  }}>
+                  收起面板
+                </button>
+              </>
+            )}
+
+            {/* Setup: no active combat */}
+            {!showCombat && (
+              <>
+                {combatQueue.length > 0 && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
+                    {combatQueue.map((h, i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 8, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)" }}>
+                        <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)", flex: 1 }}>{h.name} · 敏捷{h.dex} · HP{h.hp}</span>
+                        <button onClick={() => setCombatQueue(prev => prev.filter((_, j) => j !== i))}
+                          style={{ background: "none", border: "none", color: "rgba(255,100,80,0.6)", cursor: "pointer", fontSize: "calc(12px*var(--app-text-scale,1))", fontFamily: "inherit" }}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                  <input value={combatInput.name} onChange={e => setCombatInput(prev => ({ ...prev, name: e.target.value }))}
+                    placeholder="敌人名（如 深潜者A）"
+                    style={{ flex: 2, minWidth: 0, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--c-adv-input-border)", background: "var(--c-adv-input-bg)", color: "var(--c-adv-body)", fontSize: "calc(12px*var(--app-text-scale,1))", fontFamily: "inherit", outline: "none" }} />
+                  <input value={combatInput.dex} onChange={e => setCombatInput(prev => ({ ...prev, dex: e.target.value }))} inputMode="numeric"
+                    placeholder="敏捷"
+                    style={{ flex: 1, minWidth: 0, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--c-adv-input-border)", background: "var(--c-adv-input-bg)", color: "var(--c-adv-body)", fontSize: "calc(12px*var(--app-text-scale,1))", fontFamily: "inherit", outline: "none" }} />
+                  <input value={combatInput.hp} onChange={e => setCombatInput(prev => ({ ...prev, hp: e.target.value }))} inputMode="numeric"
+                    placeholder="HP"
+                    style={{ flex: 1, minWidth: 0, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--c-adv-input-border)", background: "var(--c-adv-input-bg)", color: "var(--c-adv-body)", fontSize: "calc(12px*var(--app-text-scale,1))", fontFamily: "inherit", outline: "none" }} />
+                </div>
+                <button
+                  onClick={() => {
+                    const name = combatInput.name.trim();
+                    const dex = parseInt(combatInput.dex, 10) || 50;
+                    const hp = parseInt(combatInput.hp, 10) || 10;
+                    if (!name) return;
+                    setCombatQueue(prev => [...prev, makeHostile(name, dex, hp)]);
+                    setCombatInput({ name: "", dex: "", hp: "" });
+                  }}
+                  style={{
+                    width: "100%", padding: "10px 0", borderRadius: 10, marginBottom: 8,
+                    border: "1px solid var(--c-adv-input-border)", background: "var(--c-adv-input-bg)",
+                    color: "var(--c-adv-text)", fontSize: "calc(12px*var(--app-text-scale,1))",
+                    cursor: "pointer", fontFamily: "inherit",
+                  }}>
+                  + 添加敌人
+                </button>
+                <button onClick={() => { startCombat(combatQueue); setCombatQueue([]); }}
+                  disabled={combatQueue.length === 0}
+                  style={{
+                    width: "100%", padding: "12px 0", borderRadius: 10,
+                    border: "1px solid rgba(200,80,80,0.35)",
+                    background: combatQueue.length === 0 ? "rgba(255,255,255,0.03)" : "rgba(200,80,80,0.2)",
+                    color: combatQueue.length === 0 ? "rgba(255,255,255,0.25)" : "rgba(230,130,120,0.95)",
+                    fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 600, letterSpacing: "0.1em",
+                    cursor: combatQueue.length === 0 ? "default" : "pointer", fontFamily: "inherit",
+                  }}>
+                  ⚔️ 掷先攻，开始战斗
+                </button>
+                <button onClick={() => setCombatOpen(false)}
+                  style={{
+                    width: "100%", marginTop: 8, padding: "10px 0", borderRadius: 10,
+                    border: "1px solid var(--c-adv-input-border)", background: "transparent",
+                    color: "var(--c-adv-text-dim)", fontSize: "calc(12px*var(--app-text-scale,1))",
+                    cursor: "pointer", fontFamily: "inherit",
+                  }}>
+                  取消
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}

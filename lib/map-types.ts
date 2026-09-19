@@ -235,6 +235,22 @@ export type GameSave = {
   checkpoint?: string;           // JSON snapshot of GameSave at save point (for death rollback)
   pacing?: "relaxed" | "normal" | "fast";  // narrative pacing preference
   completed?: boolean;           // main quest finished
+  // ── CoC6 combat round (fork) ──
+  combat?: {
+    round: number;                                  // 当前轮次
+    initiative: string[];                           // 先攻序列 tokens: player / comp:<id> / hostile:<name>
+    currentIndex: number;                           // 当前行动者索引
+    hostiles: { name: string; dex: number; hp: number; maxHp: number; notes?: string }[];
+    hostileIndex: number;                           // 战斗开始时 hostiles 在先攻中的起始位（仅记录）
+    playerDamageDealt: Record<string, number>;      // hostileName → 已造成伤害
+    ended?: boolean;
+  };
+  madness?: {
+    temporary?: { rounds: number; symptom: string; until?: string };  // 临时疯狂（剩余轮数）
+    permanent?: boolean;              // 永久疯狂（SAN=0）
+    phobias: string[];                // 恐惧症/狂躁症积累
+    log: { day: string; text: string }[];
+  };
 };
 
 // ── MapWorld (stored in IndexedDB) — world is independent of characters ──
@@ -265,6 +281,7 @@ export type CharacterAgent = {
   affinity: number;            // towards user, 0-100
   stats: CharStats;
   sheet?: CharSheet;           // CoC6 sheet for this companion
+  madness?: { temporary?: { rounds: number; symptom: string }; permanent?: boolean };
 };
 
 // ── CoC character sheet (fork: occupation/skills/weapons) ──

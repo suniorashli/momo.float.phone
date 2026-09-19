@@ -291,3 +291,49 @@ export function buildInitiative(
   ];
   return entries.sort((a, b) => b.dex - a.dex || b.jitter - a.jitter).map(e => e.token);
 }
+
+// ═══════════════════════════════════════════
+// Madness system (CoC6)
+// ═══════════════════════════════════════════
+
+/** CoC6 sanity loss thresholds.
+ *  totalLoss ≥ 5 in one scene → 临时疯狂（不定性疯狂，1d10 rounds of temporary insanity）;
+ *  san hitting 0 → 永久疯狂（indefinite insanity）. */
+export function sanityLossVerdict(totalLoss: number, sanBefore: number): { temporaryMadness: boolean; goneInsane: boolean } {
+  return {
+    temporaryMadness: totalLoss >= 5,
+    goneInsane: sanBefore - totalLoss <= 0,
+  };
+}
+
+export const MADNESS_TABLE: string[] = [
+  "健忘症（忘记刚才发生的一切）",
+  "躯体化症状（昏厥、抽搐、失语）",
+  "暴力倾向（攻击视野中的一切，包括队友）",
+  "类偏执（坚信有人在追杀自己）",
+  "尖叫逃窜（向远离恐怖源的方向狂奔）",
+  "歇斯底里（大笑、痛哭、无法自控）",
+  "恐惧症发作（针对当下的刺激源）",
+  "狂躁症（不停做事、说话，无法安静）",
+  "幻觉（看见不存在的东西并信以为真）",
+  "木僵（呆立原地，对一切无反应）",
+];
+
+/** Roll temporary (indefinite-lite) madness symptom: d10 → symptom text. */
+export function rollTemporaryMadness(): string {
+  return MADNESS_TABLE[rand(0, MADNESS_TABLE.length - 1)];
+}
+
+/** Battle-round hostiles: KP declares names + DEX (approx from narration); we track hp via a simple ledger. */
+export type HostileCombatant = {
+  id: string;           // = name
+  name: string;
+  dex: number;
+  hp: number;
+  maxHp: number;
+  notes?: string;       // KP-provided description (e.g. 深潜者×3)
+};
+
+export function makeHostile(name: string, dex: number, hp: number, notes?: string): HostileCombatant {
+  return { id: name, name, dex, hp, maxHp: Math.max(1, hp), notes };
+}

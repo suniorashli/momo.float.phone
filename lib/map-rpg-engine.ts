@@ -619,10 +619,15 @@ export type DMContext = {
     items: string[];
     playerStats?: import("./map-types").CharStats;
     playerSheet?: import("./map-types").CharSheet;
+    combat?: { round: number; initiative: string[]; currentIndex: number; hostiles: { name: string; dex: number; hp: number; maxHp: number; notes?: string }[] };
+    madness?: { temporary?: { rounds: number; symptom: string }; permanent?: boolean };
     companions: { name: string; affinity: number; stats: import("./map-types").CharStats; status: string; sheet?: import("./map-types").CharSheet }[];
   };
   declarations?: import("./map-types").Declaration[];
   pacing?: "relaxed" | "normal" | "fast";
+  // Fork: combat round + madness state (shown to KP)
+  combat?: { round: number; initiative: string[]; currentIndex: number; hostiles: { name: string; dex: number; hp: number; maxHp: number; notes?: string }[] };
+  madness?: { temporary?: { rounds: number; symptom: string }; permanent?: boolean };
 };
 
 /** Truncate an array of strings from the oldest, keeping newest within token budget */
@@ -721,6 +726,14 @@ ${(ctx.mainQuestStages || []).map((s, i) => {
 ${mapBlock}
 ${dmBlock}${dirBlock}${questBlock}${pacingHint}
 
+${ctx.combat ? `\n# 战斗轮
+第${ctx.combat.round}轮 · 先攻顺序：${ctx.combat.initiative.join(" → ")}
+当前行动：${ctx.combat.initiative[ctx.combat.currentIndex] || "—"}
+敌方状态：${ctx.combat.hostiles.filter(h => h.hp > 0).map(h => `${h.name}(HP${h.hp}/${h.maxHp}${h.notes ? `，${h.notes}` : ""})`).join("、") || "已全灭"}
+（战斗轮中：每人每轮1个行动。系统自动结算攻击骰与伤害骰并已推送结果；你负责描述攻击的场面与敌人的反扑，敌人攻击时在lost里扣玩家/角色HP）` : ""}
+${ctx.madness?.permanent ? `\n【疯狂状态】{{user}}已永久疯狂（SAN归零）——其行动应表现为失控、呓语或彻底呆滞，由恐惧支配。`
+  : ctx.madness?.temporary ? `\n【疯狂状态】{{user}}临时疯狂发作中（剩余${ctx.madness.temporary.rounds}轮）：${ctx.madness.temporary.symptom}——描述中体现该症状，其宣言可能不受理智控制，其余队员可以尝试约束/安抚。` : ""}
+
 # 当前场景
 地点：${ctx.currentLocation} · ${ctx.gameTime}
 事件：${ctx.eventType} — ${ctx.eventBrief}
@@ -739,7 +752,8 @@ ${ctx.partyStatus.companions.map(c => `${c.name}：${c.sheet?.occupation || "调
 # 规则（COC第6版）
 属性（百分值）：力量str/体质con/意志pow/敏捷dex/外貌app/体型siz/智力int/教育edu/理智san/幸运lck。属性成长由系统自动处理，DM不要在gained里加属性。
 HP：生命值，由体质与体型决定。DM根据剧情在lost里扣HP，格式"HP-15"（玩家）或"小雪:HP-10"（角色）。
-SAN：理智值（0-99）。目睹恐怖、阅读禁书、直面神话存在都会扣SAN，格式"SAN-5"（玩家）或"小雪:SAN-3"（角色）。SAN大量流失会导致恐惧发作——描述手抖、尖叫、瘫软或歇斯底里。SAN归零意味着疯狂，角色失去自控。
+SAN：理智值（0-99）。目睹恐怖、阅读禁书、直面神话存在都会扣SAN，格式"SAN-5"（玩家）或"小雪:SAN-3"（角色）。
+疯狂判定（系统自动）：单场景SAN损失≥5 → 系统掷1D10轮临时疯狂（健忘/暴力/偏执/尖叫逃窜/歇斯底里/幻觉/木僵等），症状会显示在[疯狂状态]里，KP按症状描写其失控言行；SAN归零 → 永久疯狂，心智不再受控。同伴的SAN损失也会让他们陷入疯狂，由你描写。
 属性扣减：受伤扣体质、惊吓扣意志等，格式如"体质-5"或"小雪:力量-3"。
 
 掷骰判定结果（系统自动判定，DM必须严格遵守）：
