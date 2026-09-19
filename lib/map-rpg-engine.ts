@@ -228,7 +228,8 @@ NPC与怪物创作指导（COC风格，与DND式"每个据点必有NPC"完全相
 - 若提供了模组背景：NPC、怪物、主线、密档全部取自模组内容，你只负责把模组素材映射成上述区域/节点结构；模组没提的内容不要编造
 - 总共 {{npc_count}} 个NPC/怪物分布在不同节点（含主城NPC与creature）；至少 2 个NPC在 #档案 里有隐藏身份或秘密
 - 总共 5-8 个偶遇分布在不同节点；[偶遇情绪] 优先用 eerie/dread/uncanny/tense（克苏鲁氛围），轻松场合才用 warm/humorous
-- [NPC性格] 写一段有画面感的描写（4-8 句）
+- [NPC性格] 写一段有画面感的描写（2-4 句，精炼有力，不要铺陈）
+- 【输出预算·重要】整体输出必须紧凑：不写任何与跑团无关的风景铺陈、不重复示例内容；宁可每个字段短一句，也不要在结尾被截断——截断=全部作废重来
 - [地理] 可选：mountainous/plains/canyon/forest/coastal/desert/swamp
 - 世界风格基调：{{tone}}
 - 主线类型倾向：{{main_quest_type}}
@@ -239,6 +240,292 @@ NPC与怪物创作指导（COC风格，与DND式"每个据点必有NPC"完全相
   · 秘密可以是：目击了某事件、藏了某物、隐瞒了身份或动机、与某个NPC有私交/旧怨、提前读过某页文献等
   · 秘密不影响调查员「想要查明真相」的立场——他们守秘密是为了自保或保护某人，不是与全队为敌
 {{module_text}}`;
+
+// ═══════════════════════════════════════════
+// Fork 十三期: staged world generation — skeleton → parallel region fills → secrets
+// Each stage is a small call; failure retry costs one stage, not everything.
+// ═══════════════════════════════════════════
+
+const SKELETON_PROMPT = `你是COC（克苏鲁的呼唤）跑团的世界架构师。根据世界描述/模组背景，只设计世界骨架：区域划分与节点名——不需要任何NPC、任务、遭遇的细节（那些下一步单独生成）。
+
+只输出标签块纯文本，不要JSON、不要markdown代码块：
+[世界名]6-10字
+[世界观]2-3句时代与氛围
+
+#区域1
+[id]英文小写id（如arkham，全图唯一）
+[中文名]区域名
+[英文名]英文名
+[地理]mountainous/plains/canyon/forest/coastal/desert/swamp 之一
+[河流数]0-3
+[邻接]其他区域的id，顿号分隔（必须对称：A邻接B则B也邻接A）
+[区域类型]主城/城镇/荒野/废墟/禁区（主城/城镇全图1-2个，其余为探索区）
+
+然后每个区域列节点（##L2节点 / ##L3节点 各区域 2-4 个 L2、0-2 个 L3，只写名字不写内容）：
+##L2节点1
+[名称]地点名
+##L3节点1
+[名称]偏远地点名
+
+要求：区域 {{region_count}} 个；节点名具体有画面感（"米斯卡塔尼克大学图书馆"而非"图书馆"）；若有模组背景，地点必须取自模组。`;
+
+const REGION_FILL_PROMPT = `你是COC跑团的世界架构师。下面是已定稿的世界骨架与一个待填充的区域。只为本区域生成内容：NPC、怪物、任务、偶遇。COC 风格：区域可以完全无人，NPC宁少勿多，每个NPC的personality写4-8句有画面感的描写。
+
+只输出标签块纯文本（只输出本区域的内容，不要重复区域头）：
+{区域头}
+[主城NPC名]（仅主城/城镇区域填）4-8句描写
+[主城NPC性格]同上组
+[主城NPC角色]info/quest/merchant/ambient/rival/creature
+##L2节点1
+[名称]（与骨架一致）
+[NPC名]该节点的NPC（无人则留空整组省略；怪物填[NPC角色]creature，性格写外形与危险度）
+[NPC性格]
+[NPC角色]
+[任务id]sqN（可选）
+[任务标题]
+[任务简介]一两句
+[偶遇id]encN（L3节点适合放偶遇）
+[偶遇简介]
+[偶遇情绪]eerie/dread/uncanny/tense/warm/humorous
+##L3节点1
+（同上）
+
+硬性要求：
+- 严格使用骨架里既定的节点名与数量，不得增删节点
+- 若提供了模组背景：NPC/怪物/任务/偶遇必须取自模组，禁止编造模组外的关键NPC
+- 本区域NPC+怪物总数约 {npc_budget} 个（0也合法——无人荒野是常态）`;
+
+const SECRETS_PROMPT = `你是COC跑团的世界架构师。基于已知的世界真相框架与人物，为调查员们设计个人秘密（秘密团用）。
+
+只输出标签块纯文本：
+#秘密团
+[秘密1]内容（一句话：TA目击了什么/藏了什么/隐瞒了什么身份）
+[咬合1]与主线真相的咬合点
+[知情者1]知道更多的NPC名（必须取自已知NPC列表）
+（共 {secret_count} 条，编号递增）
+
+要求：互不重复、各自独立可守、不是与全队为敌、秘密持有者是要查明真相的调查员同伴。`;
+
+/** Parse the skeleton-stage tagged output into region shells. */
+function parseSkeletonStage(text: string): { world: { name: string; lore: string }; regions: { id: string; cn: string; en: string; geo: string; rivers: number; adj: string[]; type: string; l2: string[]; l3: string[] }[] } | null {
+  const src = text.replace(/```[a-zA-Z]*\s*/g, "").replace(/```/g, "").replace(/\r/g, "").trim();
+  const topRe = /^(?!#)([\s\S]*?)(?=\n#|$)/;
+  const top = (src.match(topRe)?.[1] || src).trim();
+  const f0 = parseWorldTaggedFields(top);
+  const regions: { id: string; cn: string; en: string; geo: string; rivers: number; adj: string[]; type: string; l2: string[]; l3: string[] }[] = [];
+  const re = /^#\s*(区域|地区)\s*(\d*)\s*$/gm;
+  const heads = [...src.matchAll(re)];
+  for (let i = 0; i < heads.length; i++) {
+    const h = heads[i];
+    if (h.index === undefined) continue;
+    const start = h.index + h[0].length;
+    const end = i + 1 < heads.length && heads[i + 1].index !== undefined ? heads[i + 1].index! : src.length;
+    const body = src.slice(start, end);
+    // L1 fields + node names
+    const subRe = /^##\s*(.+?)\s*$/gm;
+    const subs = [...body.matchAll(subRe)];
+    const l1Body = subs.length && subs[0].index !== undefined ? body.slice(0, subs[0].index) : body;
+    const f = parseWorldTaggedFields(l1Body);
+    const l2: string[] = [];
+    const l3: string[] = [];
+    for (let j = 0; j < subs.length; j++) {
+      const s = subs[j];
+      if (s.index === undefined) continue;
+      const sStart = s.index + s[0].length;
+      const sEnd = j + 1 < subs.length && subs[j + 1].index !== undefined ? subs[j + 1].index! : body.length;
+      const nf = parseWorldTaggedFields(body.slice(sStart, sEnd));
+      const nm = nf["名称"] || "";
+      if (nm) (/L3/i.test(s[1]) ? l3 : l2).push(nm);
+    }
+    if (f["中文名"] || f["id"]) {
+      regions.push({
+        id: f["id"] || `region_${i}`, cn: f["中文名"] || `区域${i + 1}`, en: f["英文名"] || "",
+        geo: f["地理"] || "plains", rivers: worldIntField(f["河流数"]), adj: worldSplitList(f["邻接"]), type: f["区域类型"] || "",
+        l2, l3,
+      });
+    }
+  }
+  if (!regions.length) return null;
+  return { world: { name: f0["世界名"] || "新世界", lore: f0["世界观"] || "" }, regions };
+}
+
+/** LLM call with one auto-continue on truncation (fork 十三期). */
+async function simpleLLMCallWithContinue(apiConfig: ApiConfig, messages: Array<{ role: string; content: string }>, opts?: { temperature?: number }): Promise<string> {
+  let result = await simpleLLMCall(apiConfig, messages as never, opts);
+  let text = (result.content as string) || "";
+  if (!result.wasTruncated || !text) return text;
+  // Auto-continue: ask the model to pick up where it stopped
+  const cont = await simpleLLMCall(apiConfig, [
+    ...messages as never[],
+    { role: "assistant", content: text } as never,
+    { role: "user", content: "你的输出被截断了。从中断处原样继续，不要重复已输出的内容，不要任何解释。" } as never,
+  ], opts);
+  return text + "\n" + ((cont.content as string) || "");
+}
+
+/** Staged generation: skeleton → parallel per-region fills → secrets (each stage small & retryable). */
+async function generateWorldSkeletonStaged(
+  userDescription: string,
+  apiConfig: ApiConfig,
+  vars?: Record<string, string>,
+  onProgress?: (step: string) => void,
+): Promise<WorldSkeleton> {
+  const regionCount = parseInt(vars?.region_count || "6", 10) || 6;
+  const npcTotal = parseInt(vars?.npc_count || "12", 10);
+  const moduleTextRaw = vars?.module_text || "";
+  const v = (s: string) => {
+    let out = s;
+    if (vars) for (const [k, val] of Object.entries(vars)) out = out.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), val ?? "");
+    return out;
+  };
+
+  // ── Stage 1: skeleton (names only — small output) ──
+  onProgress?.(`世界骨架（1/3）`);
+  let skelPrompt = v(SKELETON_PROMPT);
+  const user1 = `世界描述：${userDescription}${moduleTextRaw ? `\n\n# 模组背景（地点与区域必须取自此模组）\n${moduleTextRaw.slice(0, 12000)}` : ""}\n\n基调：${vars?.tone || "自由发挥"} · 主线倾向：${vars?.main_quest_type || "自由发挥"} · 难度：${vars?.difficulty || "适中"}`;
+  let skelText = await simpleLLMCallWithContinue(apiConfig, [
+    { role: "system", content: skelPrompt },
+    { role: "user", content: user1 },
+  ], { temperature: 0.8 });
+  let skeletonParsed = parseSkeletonStage(skelText);
+  if (!skeletonParsed) {
+    // One retry with a stricter reminder
+    skelText = await simpleLLMCallWithContinue(apiConfig, [
+      { role: "system", content: skelPrompt + "\n\n【再次提醒】只输出标签块格式，第一行必须是[世界名]。" },
+      { role: "user", content: user1 },
+    ], { temperature: 0.8 });
+    skeletonParsed = parseSkeletonStage(skelText);
+    if (!skeletonParsed) throw new Error("骨架阶段解析失败（模型未按标签格式输出）");
+  }
+
+  // Symmetrize adjacency
+  const byId = new Map(skeletonParsed.regions.map(r => [r.id, r]));
+  for (const r of skeletonParsed.regions) {
+    for (const a of r.adj) byId.get(a) && !byId.get(a)!.adj.includes(r.id) && byId.get(a)!.adj.push(r.id);
+  }
+
+  // ── Stage 2: parallel per-region fills ──
+  const npcBudget = Math.max(0, Math.ceil(npcTotal / Math.max(1, skeletonParsed.regions.length)));
+  const regions = await Promise.all(skeletonParsed.regions.map(async (r, ri) => {
+    onProgress?.(`区域填充 ${ri + 1}/${skeletonParsed.regions.length}：${r.cn}`);
+    const regionHead = `#区域${ri + 1}\n[id]${r.id}\n[中文名]${r.cn}\n[英文名]${r.en}\n[地理]${r.geo}\n[河流数]${r.rivers}\n[邻接]${r.adj.join("、")}\n[区域类型]${r.type || "荒野"}`;
+    const nodeList = [...r.l2.map(n => `##L2节点\n[名称]${n}`), ...r.l3.map(n => `##L3节点\n[名称]${n}`)].join("\n");
+    const fillPrompt = REGION_FILL_PROMPT.replace("{区域头}", regionHead).replace("{npc_budget}", String(npcBudget));
+    const user2 = `世界：${skeletonParsed.world.name}——${skeletonParsed.world.lore}\n${regionHead}\n\n本区域既定节点（严格用这些名字）：\n${nodeList}\n\n主城/城镇：${["主城", "城镇"].includes(r.type) ? "是（需要主城NPC）" : "否"}${moduleTextRaw ? `\n\n# 模组背景（NPC/怪物/任务必须取自此模组）\n${moduleTextRaw.slice(0, 10000)}` : ""}`;
+    try {
+      const text = await simpleLLMCallWithContinue(apiConfig, [
+        { role: "system", content: fillPrompt },
+        { role: "user", content: user2 },
+      ], { temperature: 0.8 });
+      return parseWorldRegionBlock(`${regionHead}\n${text}`);
+    } catch {
+      // Region fill failed → keep the shell (nodes exist, no content) instead of failing the world
+      return {
+        id: r.id, l1_name_cn: r.cn, l1_name_en: r.en,
+        geography: (r.geo as "mountainous" | "plains" | "canyon"),
+        river_count: r.rivers, adjacent_to: r.adj, region_type: r.type,
+        l2_nodes: r.l2.map(n => ({ name: n })), l3_nodes: r.l3.map(n => ({ name: n })),
+      };
+    }
+  }));
+
+  // ── Stage 3: main quest + dossier + secrets (one medium call, from region names) ──
+  onProgress?.(`主线与秘密（3/3）`);
+  const mqPrompt = `你是COC跑团的世界架构师。基于世界与全部地点，设计主线调查链、DM密档与个人秘密。只输出标签块纯文本，不要JSON：
+
+#主线
+[id]mq
+[标题]
+[梗概]2-3句：真相是什么、调查员为何卷入
+[阶段1地点]具体节点名
+[阶段1简介]
+[阶段1解锁]
+（4-5个阶段；阶段地点从给定节点里选；调查/揭秘驱动，不是杀怪夺宝）
+
+#档案
+[隐藏真相]2-3句
+[NPC秘密:NPC名]TA隐瞒的事（有秘密的NPC写几条，名字与NPC列表完全一致）
+[伏笔1]（2-4条）
+[反转]
+[结局]
+
+${SECRETS_PROMPT.replace("{secret_count}", "4")}
+
+NPC列表（秘密与知情者只能用这些名字）：${regions.flatMap(rg => [rg.l1_npc?.name, ...rg.l2_nodes.map(n => n.npc?.name), ...rg.l3_nodes.map(n => n.npc?.name)].filter(Boolean) as string[]).join("、")}
+节点列表（主线阶段地点只能用这些名字）：${regions.flatMap(rg => [rg.l1_name_cn, ...rg.l2_nodes.map(n => n.name), ...rg.l3_nodes.map(n => n.name)]).join("、")}${moduleTextRaw ? `\n\n# 模组背景（主线/密档/秘密优先取自此模组）\n${moduleTextRaw.slice(0, 8000)}` : ""}`;
+  const mqText = await simpleLLMCallWithContinue(apiConfig, [
+    { role: "system", content: mqPrompt },
+    { role: "user", content: `世界：${skeletonParsed.world.name}——${skeletonParsed.world.lore}\n基调：${vars?.tone || "自由发挥"} · 主线倾向：${vars?.main_quest_type || "自由发挥"}` },
+  ], { temperature: 0.8 });
+
+  // Reuse the existing tagged parsers for the tail section
+  const tail = parseWorldTagged(`#主线\n${mqText.split("#主线").slice(1).join("#主线") || mqText}`);
+  const mainQuest = (tail.main_quest || {}) as Record<string, unknown>;
+  const dmDossier = (tail.dm_dossier || {}) as Record<string, unknown>;
+  const personalSecrets = ((tail.personal_secrets || []) as PersonalSecret[]).map(s => ({ content: String(s.content || ""), link: String(s.link || ""), informant: s.informant ? String(s.informant) : undefined }));
+  const mq: QuestLine = {
+    id: "mq",
+    title: (mainQuest.title as string) || skeletonParsed.world.name,
+    type: "main",
+    synopsis: (mainQuest.synopsis as string) || "",
+    triggerRegion: regions[0]?.id || "",
+    stages: ((mainQuest.stages || []) as { location_hint: string; brief: string; unlock_hint: string }[]).map(s => ({ locationHint: s.location_hint || "", brief: s.brief || "", unlockHint: s.unlock_hint || "" })),
+  };
+  const dossier: import("./map-types").DMDossier = {
+    hiddenTruth: (dmDossier.hidden_truth as string) || "",
+    npcSecrets: (dmDossier.npc_secrets as Record<string, string>) || {},
+    foreshadowing: (dmDossier.foreshadowing as string[]) || [],
+    plotTwist: (dmDossier.plot_twist as string) || "",
+    endgame: (dmDossier.endgame as string) || "",
+  };
+
+  // Assemble (same post-processing as legacy path)
+  const richRegions: import("./map-types").RichRegion[] = regions.map(r => ({
+    id: r.id as string,
+    l1_name_cn: (r.l1_name_cn || r.name) as string,
+    l1_name_en: (r.l1_name_en || "") as string,
+    geography: (r.geography || "plains") as "mountainous" | "plains" | "canyon",
+    river_count: (r.river_count || 0) as number,
+    adjacent_to: (r.adjacent_to || []) as string[],
+    l1_npc: r.l1_npc as RichRegion["l1_npc"] || undefined,
+    l1_quest: r.l1_quest as RichRegion["l1_quest"] || undefined,
+    l2_nodes: ((r.l2_nodes || []) as unknown[]).map(n => typeof n === "string" ? { name: n } : n as import("./map-types").NodeContent),
+    l3_nodes: ((r.l3_nodes || []) as unknown[]).map(n => typeof n === "string" ? { name: n } : n as import("./map-types").NodeContent),
+  }));
+  const mapInput: WorldSkeletonInput = {
+    map_settings: { header: "", title: skeletonParsed.world.name },
+    regions: richRegions.map(r => ({ id: r.id, l1_name_cn: r.l1_name_cn, l1_name_en: r.l1_name_en, geography: r.geography, river_count: r.river_count, adjacent_to: r.adjacent_to, l2_nodes: r.l2_nodes.map(n => n.name), l3_nodes: r.l3_nodes.map(n => n.name) })),
+  };
+  const npcs: WorldNPC[] = [];
+  let npcIdx = 0;
+  for (const r of richRegions) {
+    if (r.l1_npc) npcs.push({ id: `npc_${npcIdx++}`, name: r.l1_npc.name, personality: r.l1_npc.personality, locationRegion: r.id, locationNode: r.l1_name_cn, role: r.l1_npc.role as WorldNPC["role"], relatedQuestIds: [] });
+    for (const n of [...r.l2_nodes, ...r.l3_nodes]) {
+      if (n.npc) npcs.push({ id: `npc_${npcIdx++}`, name: n.npc.name, personality: n.npc.personality, locationRegion: r.id, locationNode: n.name, role: n.npc.role as WorldNPC["role"], relatedQuestIds: n.quest ? [n.quest.id] : [] });
+    }
+  }
+  const sideQuests: QuestLine[] = [];
+  for (const r of richRegions) {
+    for (const n of [...r.l2_nodes, ...r.l3_nodes]) {
+      if (n.quest) sideQuests.push({ id: n.quest.id, title: n.quest.title, type: "side", synopsis: n.quest.brief, triggerRegion: r.id, stages: [{ locationHint: n.name, brief: n.quest.brief }] });
+    }
+    if (r.l1_quest) sideQuests.push({ id: r.l1_quest.id, title: r.l1_quest.title, type: "side", synopsis: r.l1_quest.brief, triggerRegion: r.id, stages: [{ locationHint: r.l1_name_cn, brief: r.l1_quest.brief }] });
+  }
+  const encounterPool: EncounterSeed[] = [];
+  for (const r of richRegions) {
+    for (const n of [...r.l2_nodes, ...r.l3_nodes]) {
+      if (n.encounter) encounterPool.push({ id: n.encounter.id, brief: n.encounter.brief, mood: (n.encounter.mood || "eerie") as EncounterSeed["mood"], locationTypes: [r.geography], locationNode: n.name });
+    }
+  }
+  return {
+    world: { name: skeletonParsed.world.name, lore: skeletonParsed.world.lore, rulesEdition: "coc6" },
+    mapInput, richRegions,
+    mainQuest: mq, sideQuests, npcs, encounterPool,
+    partyStats: {},
+    dmDossier: dossier,
+    personalSecrets,
+  };
+}
 
 // ── Tagged-block world parser (replaces fragile JSON; same shape as the old JSON.parse) ──
 function parseWorldTaggedFields(block: string): Record<string, string> {
@@ -385,7 +672,14 @@ export async function generateWorldSkeleton(
   companionDescriptions: string[],
   apiConfig: ApiConfig,
   vars?: Record<string, string>,
+  onProgress?: (step: string) => void,
 ): Promise<WorldSkeleton> {
+  // Fork 十三期: staged generation is the default (skeleton → parallel region fills → secrets).
+  // Falls back to the legacy single mega-call when a custom worldGen prompt is set.
+  const customPrompts = loadDMPrompts();
+  if (!customPrompts.worldGen?.trim()) {
+    return generateWorldSkeletonStaged(userDescription, apiConfig, vars, onProgress);
+  }
   // Replace {{variables}} in prompt (module_text is injected the same way — empty by default)
   let prompt = getActivePrompt("worldGen", DEFAULT_WORLD_GEN_PROMPT);
   if (vars) {
@@ -411,7 +705,10 @@ export async function generateWorldSkeleton(
   };
 
   if (!result.content) failWorldGen(result.error || "LLM 返回为空（没有任何输出）", "");
-  if (result.wasTruncated) console.warn("[WorldGen] Output was truncated");
+  if (result.wasTruncated) {
+    // Fork: truncation = unusable output — fail fast with guidance instead of parsing half a world
+    failWorldGen("输出被截断（内容太长，模型没写完）。重试前建议：①调低「区域」「NPC/怪物」数量 ②缩短模组文本或改用「分栏导入」（提取管道不受此限） ③换输出上限更高的模型", result.content);
+  }
   const rawOutput = result.content as string;
 
   // Tagged-block format (no JSON quoting/escaping pitfalls, and far fewer output
