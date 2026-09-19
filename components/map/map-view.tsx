@@ -16,6 +16,7 @@ import { expandEvent, companionDeclare, resolveRound, rollD100, resolveCheckStat
 import { skillCheckValue, resolveAttack, rollExpr, dbFromStats, findWeaponMention, LEVEL_LABEL, sanityLossVerdict, rollTemporaryMadness, buildInitiative, makeHostile, canSpendLuck, rollD100WithDice, type RollLevel, type HostileCombatant } from "@/lib/coc-sheet";
 import { STAT_LABELS, ALL_STATS, type StageAsset } from "@/lib/map-types";
 import { getAssetUrl, buildAssetManifest, registerAssetFiles, deleteAssetBlob } from "@/lib/stage-assets";
+import { importInvestigator } from "@/lib/investigator-import";
 import { saveMapWorld } from "@/lib/map-storage";
 import MapRenderer from "./map-renderer";
 import MapTextStream from "./map-text-stream";
@@ -273,6 +274,53 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   }, [assets]);
   const bilingualTranslationEnabled = adventureConfig.bilingualTranslationEnabled === true;
   const defaultTranslationExpanded = adventureConfig.collapseBilingualTranslation !== true;
+
+  // Fork: lazy investigator import — runs on first world entry (was: blocking lobby creation).
+  // One LLM call per person (player first, then companions, sequential); failures fall back silently
+  // to the raw character card. Player persona opens the review modal when it arrives.
+  const personaImportedRef = useRef(false);
+  React.useEffect(() => {
+    if (personaImportedRef.current) return;
+    if (!save.personaPending) return;
+    personaImportedRef.current = true;
+    let cancelled = false;
+    (async () => {
+      const apiConfigs = loadApiConfigs();
+      const apiConfig = apiConfigs.find(c => c.apiKey) || apiConfigs[0];
+      if (!apiConfig?.apiKey) return;
+      const myName = userIdentity?.name || "调查员";
+      const introSource = `${skeleton.world.name}：${skeleton.world.lore.slice(0, 260)}`;
+      // Player persona first → review modal opens as soon as it's ready
+      try {
+        const persona = await importInvestigator(myName, `（用户本人）${introSource}`, skeleton, save.mySecret, apiConfig);
+        if (!cancelled && persona) persistSave({ ...saveRef.current, myPersona: { ...persona, confirmed: false } });
+      } catch { /* fallback: no player persona */ }
+      // Companions, one by one — each keeps its slot even on failure (raw card used)
+      for (const a of saveRef.current.agents) {
+        const ch = characters.find(c => c.id === a.characterId);
+        try {
+          const persona = await importInvestigator(ch?.name || "调查员", ch?.personality || "", skeleton, save.agentSecrets?.[a.characterId], apiConfig);
+          if (!cancelled && persona) persistSave({
+            ...saveRef.current,
+            agents: saveRef.current.agents.map(x => x.characterId === a.characterId ? { ...x, persona } : x),
+          });
+        } catch { /* fallback: raw card */ }
+      }
+      if (!cancelled) {
+        const finalSave = { ...saveRef.current };
+        delete finalSave.personaPending;
+        persistSave(finalSave);
+        pushMessages({ id: mkId(), type: "system", text: "🎭 调查员身份已就绪" });
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [save.personaPending]);
+  // Player persona review modal opens when an unconfirmed persona arrives (state at L68 reads save.myPersona on mount)
+  React.useEffect(() => {
+    if (save.myPersona && !save.myPersona.confirmed) setPersonaReview(save.myPersona);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [save.myPersona]);
 
   const agentsAtNode = useCallback((nodeId: string) =>
     save.agents.filter(a => a.characterId && a.currentNodeId === nodeId),

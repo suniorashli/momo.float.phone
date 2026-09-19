@@ -267,7 +267,7 @@ const SKELETON_PROMPT = `你是COC（克苏鲁的呼唤）跑团的世界架构�
 ##L3节点1
 [名称]偏远地点名
 
-要求：区域 {{region_count}} 个；节点名具体有画面感（"米斯卡塔尼克大学图书馆"而非"图书馆"）；若有模组背景，地点必须取自模组。`;
+要求：{{region_rule}}节点名具体有画面感（"米斯卡塔尼克大学图书馆"而非"图书馆"）；若有模组背景，地点必须取自模组。`;
 
 const REGION_FILL_PROMPT = `你是COC跑团的世界架构师。下面是已定稿的世界骨架与一个待填充的区域。只为本区域生成内容：NPC、怪物、任务、偶遇。COC 风格：区域可以完全无人，NPC宁少勿多，每个NPC的personality写4-8句有画面感的描写。
 
@@ -293,7 +293,7 @@ const REGION_FILL_PROMPT = `你是COC跑团的世界架构师。下面是已定�
 硬性要求：
 - 严格使用骨架里既定的节点名与数量，不得增删节点
 - 若提供了模组背景：NPC/怪物/任务/偶遇必须取自模组，禁止编造模组外的关键NPC
-- 本区域NPC+怪物总数约 {npc_budget} 个（0也合法——无人荒野是常态）`;
+- {npc_rule}`;
 
 const SECRETS_PROMPT = `你是COC跑团的世界架构师。基于已知的世界真相框架与人物，为调查员们设计个人秘密（秘密团用）。
 
@@ -381,7 +381,11 @@ async function generateWorldSkeletonStaged(
 
   // ── Stage 1: skeleton (names only — small output) ──
   onProgress?.(`世界骨架（1/3）`);
-  let skelPrompt = v(SKELETON_PROMPT);
+  // Fork: module mode — region count is decided by the model from the module text, not the slider
+  const regionRule = moduleTextRaw
+    ? "【模组模式】通读模组后按模组实际地点数量自由决定区域数（建议 4-8 个，模组地点多就多、少就少，不追求整齐），每个地点都有出处；"
+    : `区域 ${regionCount} 个；`;
+  let skelPrompt = v(SKELETON_PROMPT).replace("{{region_rule}}", regionRule);
   const user1 = `世界描述：${userDescription}${moduleTextRaw ? `\n\n# 模组背景（地点与区域必须取自此模组）\n${moduleTextRaw.slice(0, 12000)}` : ""}\n\n基调：${vars?.tone || "自由发挥"} · 主线倾向：${vars?.main_quest_type || "自由发挥"} · 难度：${vars?.difficulty || "适中"}`;
   let skelText = await simpleLLMCallWithContinue(apiConfig, [
     { role: "system", content: skelPrompt },
@@ -405,12 +409,16 @@ async function generateWorldSkeletonStaged(
   }
 
   // ── Stage 2: parallel per-region fills ──
-  const npcBudget = Math.max(0, Math.ceil(npcTotal / Math.max(1, skeletonParsed.regions.length)));
+  // Fork: module mode — NPC budget is advisory only; the model decides per region from the module text.
+  const npcBudget = moduleTextRaw ? -1 : Math.max(0, Math.ceil(npcTotal / Math.max(1, skeletonParsed.regions.length)));
   const regions = await Promise.all(skeletonParsed.regions.map(async (r, ri) => {
     onProgress?.(`区域填充 ${ri + 1}/${skeletonParsed.regions.length}：${r.cn}`);
     const regionHead = `#区域${ri + 1}\n[id]${r.id}\n[中文名]${r.cn}\n[英文名]${r.en}\n[地理]${r.geo}\n[河流数]${r.rivers}\n[邻接]${r.adj.join("、")}\n[区域类型]${r.type || "荒野"}`;
     const nodeList = [...r.l2.map(n => `##L2节点\n[名称]${n}`), ...r.l3.map(n => `##L3节点\n[名称]${n}`)].join("\n");
-    const fillPrompt = REGION_FILL_PROMPT.replace("{区域头}", regionHead).replace("{npc_budget}", String(npcBudget));
+    const npcRule = moduleTextRaw
+      ? "模组模式：NPC/怪物数量由你按模组本区域的实际人物决定（模组此处有谁就放谁，没有就留空，0个也正常）——不要为了凑数编造模组外NPC"
+      : `本区域NPC+怪物总数约 ${npcBudget} 个（0也合法——无人荒野是常态）`;
+    const fillPrompt = REGION_FILL_PROMPT.replace("{区域头}", regionHead).replace("{npc_rule}", npcRule);
     const user2 = `世界：${skeletonParsed.world.name}——${skeletonParsed.world.lore}\n${regionHead}\n\n本区域既定节点（严格用这些名字）：\n${nodeList}\n\n主城/城镇：${["主城", "城镇"].includes(r.type) ? "是（需要主城NPC）" : "否"}${moduleTextRaw ? `\n\n# 模组背景（NPC/怪物/任务必须取自此模组）\n${moduleTextRaw.slice(0, 10000)}` : ""}`;
     try {
       const text = await simpleLLMCallWithContinue(apiConfig, [

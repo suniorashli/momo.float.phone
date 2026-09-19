@@ -27,7 +27,7 @@ import {
 } from "@/lib/map-storage";
 import { generateWorldSkeleton, DEFAULT_WORLD_GEN_PROMPT, DEFAULT_DM_SCENE_PROMPT, DEFAULT_DM_RESOLVE_PROMPT, DEFAULT_DM_ENDING_PROMPT, DEFAULT_ADVENTURE_SUMMARY_PROMPT } from "@/lib/map-rpg-engine";
 import { extractNpcsFromText, extractTruthFromText, extractActsFromText, assembleSkeletonFromCore } from "@/lib/module-core";
-import { importInvestigator } from "@/lib/investigator-import";
+// (investigator import moved to map-view first-entry lazy import — lobby no longer blocks on it)
 import { resolveUserIdentity } from "@/lib/settings-storage";
 import type { ModuleCore, ModuleAct } from "@/lib/map-types";
 import { generateMap, type GeoJSONData } from "@/lib/map-engine";
@@ -312,18 +312,11 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         saveMapWorld(world);
         const startNode = renderedMap.l1Nodes[0]?.id || "l1_0";
         let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
-        // Fork 十二期: player persona import (assembly path)
-        try {
-          save.myPersona = await importInvestigator(userIdentity?.name || "调查员", `（用户本人）${effectiveDesc.slice(0, 400)}`, skeleton, save.mySecret, apiConfig);
-        } catch { /* fallback */ }
-        // Fork 十一期: persona import (module-core assembly path — same adaptation as LLM path)
+        // Fork: persona import deferred to first world entry (one LLM call per person, non-blocking here)
+        save.personaPending = true;
         for (const cid of charIdsSnapshot) {
           const ch = characters.find(c => c.id === cid);
-          let persona: import("@/lib/map-types").InvestigatorPersona | undefined;
-          try {
-            persona = await importInvestigator(ch?.name || "调查员", ch?.personality || "", skeleton, skeleton.personalSecrets?.[save.agents.length], apiConfig);
-          } catch { /* fallback */ }
-          save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets, persona);
+          save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets, undefined);
         }
         const discovered: string[] = [startNode];
         renderedMap.l2Nodes.forEach((n, i) => { if (n.regionIdx === 0) discovered.push(`l2_${i}`); });
@@ -382,18 +375,11 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
       // 5. Create initial save with selected characters
       const startNode = renderedMap.l1Nodes[0]?.id || "l1_0";
       let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
-      // Fork 十二期: player persona import too (reviewed on first world entry; falls back silently)
-      try {
-        save.myPersona = await importInvestigator(userIdentity?.name || "调查员", `（用户本人）${effectiveDesc.slice(0, 400)}`, skeleton, save.mySecret, apiConfig);
-      } catch { /* fallback: no persona */ }
-      // Fork 十一期: persona import — adapt each companion to the module era (LLM, fallback to raw card)
+      // Fork: persona import deferred to first world entry (one LLM call per person, non-blocking here)
+      save.personaPending = true;
       for (const cid of charIdsSnapshot) {
         const ch = characters.find(c => c.id === cid);
-        let persona: import("@/lib/map-types").InvestigatorPersona | undefined;
-        try {
-          persona = await importInvestigator(ch?.name || "调查员", ch?.personality || "", skeleton, skeleton.personalSecrets?.[save.agents.length] , apiConfig);
-        } catch { /* fallback: no persona */ }
-        save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets, persona);
+        save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets, undefined);
       }
       const startRegionIdx = 0;
       const discovered: string[] = [startNode];
@@ -908,7 +894,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                 { label: "区域", value: regionCount, setter: setRegionCount, min: 3, max: 10 },
                 { label: "NPC/怪物", value: npcCount, setter: setNpcCount, min: 0, max: 20 },
               ] as const).map(s => (
-                <div key={s.label} style={{ flex: 1 }}>
+                <div key={s.label} style={{ flex: 1, opacity: moduleText.trim() ? 0.4 : 1 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
                     <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(200,160,100,0.5)", letterSpacing: "0.08em" }}>{s.label}</span>
                     <span style={{ fontSize: "calc(13px*var(--app-text-scale,1))", color: "#e8d0a0", fontWeight: 600, fontFamily: "monospace" }}>{s.value}</span>
@@ -919,6 +905,11 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                     style={{ width: "100%" }} />
                 </div>
               ))}
+              {moduleText.trim() && (
+                <div style={{ flexBasis: "100%", fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,200,100,0.55)", lineHeight: 1.5 }}>
+                  📄 模组模式下由 AI 通读模组后自由决定区域与 NPC 数量（滑块仅供参考，不再强制）
+                </div>
+              )}
             </div>
 
             {/* ── Divider ── */}

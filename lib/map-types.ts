@@ -301,6 +301,7 @@ export type GameSave = {
   // ── fork: secret party (八期A) ──
   mySecret?: PersonalSecret;                     // 用户的秘密（工具栏可见，摊牌时机由用户决定）
   myPersona?: InvestigatorPersona;               // fork 十二期: 玩家的模组内人设（首次进入时审校确认）
+  personaPending?: boolean;                      // fork: 调查员导入延迟到首次进入世界时执行（每人一次LLM，创建世界不再阻塞等待）
   agentSecrets?: Record<string, PersonalSecret>; // characterId → 同伴的秘密（KP 可见；用户结局前不可见，幕后页揭晓）
   lockedLog?: { id: string; who: string; npc?: string; text: string; day: string }[]; // 锁档私聊流（结局揭晓；八期B 填充）
   // ── fork 九期B: staged acts ──
