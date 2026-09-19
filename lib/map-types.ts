@@ -147,6 +147,16 @@ export type WorldSkeleton = {
   partyStats: Record<string, CharStats>;
   dmDossier?: DMDossier;
   personalSecrets?: PersonalSecret[];  // fork 八期A: per-investigator secrets (assigned at save creation)
+  acts?: ModuleAct[];                  // fork 九期B: staged truth reveal (assembled from module acts)
+};
+
+export type ModuleAct = {
+  index: number;
+  title: string;
+  summary: string;        // KP 视角的幕剧情（真相切片）
+  nodes: string[];        // 涉及节点名
+  secrets: string[];      // 本幕相关秘密/线索
+  stageBrief: string;     // 主线阶段简介（映射到 mainQuest stage）
 };
 
 // ── DM (Dungeon Master) System ──

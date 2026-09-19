@@ -26,6 +26,8 @@ import {
   type AdventureInteractionConfig,
 } from "@/lib/map-storage";
 import { generateWorldSkeleton, DEFAULT_WORLD_GEN_PROMPT, DEFAULT_DM_SCENE_PROMPT, DEFAULT_DM_RESOLVE_PROMPT, DEFAULT_DM_ENDING_PROMPT, DEFAULT_ADVENTURE_SUMMARY_PROMPT } from "@/lib/map-rpg-engine";
+import { extractNpcsFromText, extractTruthFromText, extractActsFromText, assembleSkeletonFromCore } from "@/lib/module-core";
+import type { ModuleCore, ModuleAct } from "@/lib/map-types";
 import { generateMap, type GeoJSONData } from "@/lib/map-engine";
 import { loadApiConfigs, loadBindingConfig, resolveBinding } from "@/lib/settings-storage";
 import type { MapWorld, GameSave } from "@/lib/map-types";
@@ -76,6 +78,52 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   const [moduleText, setModuleText] = useState("");
   const [moduleName, setModuleName] = useState("");
   const [moduleLoading, setModuleLoading] = useState(false);
+  // Fork 九期: sectioned import (NPC/truth/acts) + review + code-only assembly
+  const [secNpcText, setSecNpcText] = useState("");
+  const [secTruthText, setSecTruthText] = useState("");
+  const [secActText, setSecActText] = useState("");
+  const [extracting, setExtracting] = useState(false);
+  const [extractProgress, setExtractProgress] = useState("");
+  const [moduleCore, setModuleCore] = useState<ModuleCore | null>(null);
+  const [coreTab, setCoreTab] = useState<"npcs" | "truth" | "acts">("npcs");
+  const handleSectionFile = (file: File | null, setter: (t: string) => void) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { const t = String(reader.result || ""); setter(t); };
+    reader.readAsText(file, "utf-8");
+  };
+  /** Extract all three sections → review state (user can edit before assembling). */
+  const handleExtract = async () => {
+    if (extracting) return;
+    const hasAny = secNpcText.trim() || secTruthText.trim() || secActText.trim();
+    if (!hasAny) return;
+    const apiConfigs = loadApiConfigs();
+    const apiConfig = apiConfigs.find(c => c.apiKey) || apiConfigs[0];
+    if (!apiConfig?.apiKey) { setError("未找到有效的API配置，请先在设置中配置API"); return; }
+    setExtracting(true);
+    setError(null);
+    try {
+      const core: ModuleCore = { npcs: [], locations: [], truth: "", acts: [], rawImported: { npcText: secNpcText, truthText: secTruthText, actText: secActText } };
+      if (secNpcText.trim()) {
+        core.npcs = await extractNpcsFromText(secNpcText, apiConfig, [], p => setExtractProgress(p.step));
+      }
+      if (secTruthText.trim()) {
+        const t = await extractTruthFromText(secTruthText, apiConfig, p => setExtractProgress(p.step));
+        core.truth = t.truth;
+        core.rawImported!.truthText = secTruthText;
+      }
+      if (secActText.trim()) {
+        core.acts = await extractActsFromText(secActText, apiConfig, p => setExtractProgress(p.step));
+      }
+      if (!core.npcs.length && !core.truth && !core.acts.length) throw new Error("三个栏目都提取失败，请检查 API 配置或重试");
+      setModuleCore(core);
+      setExtractProgress("");
+    } catch (e) {
+      setError(`提取失败：${e instanceof Error ? e.message : String(e)}——已提取的部分不会丢失，可直接重试`);
+    } finally {
+      setExtracting(false);
+    }
+  };
   const handleModuleFile = (file: File | null) => {
     if (!file) return;
     setModuleLoading(true);
@@ -223,6 +271,37 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
 
     // 3. Generate in background
     try {
+      // Fork 九期: reviewed module core → code-only assembly (no LLM world-gen call)
+      if (moduleCore) {
+        const skeleton = assembleSkeletonFromCore(moduleCore, description.slice(0, 20));
+        const resp = await fetch("/countries.geo.json");
+        const geoData: GeoJSONData = await resp.json();
+        const renderedMap = generateMap(skeleton.mapInput, geoData);
+        const world: MapWorld = {
+          id: worldId,
+          skeleton,
+          renderedMap,
+          createdAt: now,
+          updatedAt: new Date().toISOString(),
+        };
+        // Persist rules edition + KP style (same as LLM path)
+        world.skeleton = { ...world.skeleton, world: { ...world.skeleton.world, rulesEdition: edition, lore: kpStyleInstruction ? `${world.skeleton.world.lore}\n\n【KP风格指令】${kpStyleInstruction}` : world.skeleton.world.lore } };
+        saveMapWorld(world);
+        const startNode = renderedMap.l1Nodes[0]?.id || "l1_0";
+        let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
+        for (const cid of charIdsSnapshot) {
+          const ch = characters.find(c => c.id === cid);
+          save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets);
+        }
+        const discovered: string[] = [startNode];
+        renderedMap.l2Nodes.forEach((n, i) => { if (n.regionIdx === 0) discovered.push(`l2_${i}`); });
+        renderedMap.l1Nodes.forEach(n => { if (!discovered.includes(n.id)) discovered.push(n.id); });
+        save.discoveredNodes = discovered;
+        save.journal[0].locationName = renderedMap.l1Nodes[0]?.nameCn || "起点";
+        saveGame(save);
+        setWorlds(loadMapWorlds());
+        return;
+      }
       const vars = {
         world_desc: description,
         tone: tone || "自由发挥",
@@ -590,6 +669,121 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
               {moduleText && (
                 <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.25)", marginTop: 5, lineHeight: 1.5 }}>
                   模组将作为世界生成的背景设定：NPC、怪物、地点、主线会优先取自模组内容（超长文件自动截取前 12000 字，建议大模组自行切割）
+                </div>
+              )}
+            </div>
+
+            {/* ── Sectioned import + extraction + review (fork 九期) ── */}
+            <div style={{ marginBottom: 14, padding: "12px 12px", borderRadius: 10, border: "1px solid rgba(200,160,100,0.18)", background: "rgba(0,0,0,0.25)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(200,160,100,0.5)", letterSpacing: "0.08em" }}>分栏导入（大模组友好）</div>
+                <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.25)" }}>提取→审校→组装，失败只重跑单栏</div>
+              </div>
+              {/* Three section upload slots */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {([
+                  { label: "NPC / 人物", text: secNpcText, setter: setSecNpcText, hint: "人物介绍、NPC列表" },
+                  { label: "真相 / 背景", text: secTruthText, setter: setSecTruthText, hint: "密档、背景设定、真相" },
+                  { label: "跑团流程", text: secActText, setter: setSecActText, hint: "分幕流程、剧情结构" },
+                ] as const).map(sec => (
+                  <div key={sec.label} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.4)", width: 68, flexShrink: 0 }}>{sec.label}</span>
+                    <label style={{
+                      flex: 1, padding: "7px 10px", borderRadius: 7, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      border: `1px solid ${sec.text ? "rgba(200,160,100,0.4)" : "rgba(200,160,100,0.1)"}`,
+                      background: sec.text ? "rgba(200,160,100,0.1)" : "rgba(0,0,0,0.2)",
+                      color: sec.text ? "#e8d0a0" : "rgba(255,255,255,0.35)",
+                      fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                    }}>
+                      {sec.text ? `📄 ${sec.text.length} 字` : `导入${sec.hint}（.txt）`}
+                      <input type="file" accept=".txt,.md,text/plain" hidden onChange={e => handleSectionFile(e.target.files?.[0] ?? null, sec.setter)} />
+                    </label>
+                    {sec.text && (
+                      <button type="button" onClick={() => sec.setter("")} style={{ padding: "7px 8px", borderRadius: 7, border: "1px solid rgba(255,100,80,0.2)", background: "transparent", color: "rgba(255,100,80,0.6)", fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit" }}>✕</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {/* Extract button + progress */}
+              <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+                <button type="button" className="tome-seal" onClick={handleExtract} disabled={extracting}
+                  style={{
+                    flex: 1, padding: "9px 0", borderRadius: 7,
+                    border: `1px solid ${extracting ? "rgba(255,255,255,0.05)" : "rgba(200,160,100,0.3)"}`,
+                    background: extracting ? "rgba(255,255,255,0.03)" : "rgba(200,160,100,0.15)",
+                    color: extracting ? "rgba(255,255,255,0.25)" : "#e8d0a0",
+                    fontSize: "calc(11px*var(--app-text-scale,1))", cursor: extracting ? "default" : "pointer", fontFamily: "inherit",
+                  }}>
+                  {extracting ? "⏳ 提取中..." : "🔍 提取模组核心"}
+                </button>
+                {moduleCore && !extracting && (
+                  <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(140,220,160,0.8)", fontFamily: "monospace" }}>✓ 已提取</span>
+                )}
+              </div>
+              {extractProgress && (
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(200,200,140,0.7)", marginTop: 6, fontFamily: "monospace" }}>{extractProgress}</div>
+              )}
+              {/* Review editor */}
+              {moduleCore && (
+                <div style={{ marginTop: 10, borderTop: "1px solid rgba(200,160,100,0.12)", paddingTop: 10 }}>
+                  <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(200,160,100,0.5)", marginBottom: 6, letterSpacing: "0.08em" }}>审校提取结果（可增删改）</div>
+                  <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+                    {(["npcs", "truth", "acts"] as const).map(t => (
+                      <button key={t} type="button" onClick={() => setCoreTab(t)}
+                        style={{
+                          flex: 1, padding: "6px 0", borderRadius: 6,
+                          border: `1px solid ${coreTab === t ? "rgba(200,160,100,0.4)" : "rgba(200,160,100,0.1)"}`,
+                          background: coreTab === t ? "rgba(200,160,100,0.15)" : "rgba(0,0,0,0.2)",
+                          color: coreTab === t ? "#e8d0a0" : "rgba(255,255,255,0.35)",
+                          fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                        }}>
+                        {t === "npcs" ? `NPC(${moduleCore.npcs.length})` : t === "truth" ? "真相" : `幕(${moduleCore.acts.length})`}
+                      </button>
+                    ))}
+                  </div>
+                  {coreTab === "npcs" && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 220, overflowY: "auto" }}>
+                      {moduleCore.npcs.map((n, i) => (
+                        <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-start", padding: "6px 8px", borderRadius: 7, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(200,160,100,0.08)" }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <input value={n.name} onChange={e => setModuleCore({ ...moduleCore, npcs: moduleCore.npcs.map((x, j) => j === i ? { ...x, name: e.target.value } : x) })}
+                              style={{ width: "100%", background: "transparent", border: "none", outline: "none", color: "#e8d0a0", fontSize: "calc(11px*var(--app-text-scale,1))", fontFamily: "inherit", marginBottom: 3 }} />
+                            <textarea value={n.personality} onChange={e => setModuleCore({ ...moduleCore, npcs: moduleCore.npcs.map((x, j) => j === i ? { ...x, personality: e.target.value } : x) })}
+                              style={{ width: "100%", minHeight: 44, background: "transparent", border: "none", outline: "none", color: "rgba(255,255,255,0.55)", fontSize: "calc(10px*var(--app-text-scale,1))", fontFamily: "inherit", lineHeight: 1.5, resize: "vertical" }} />
+                            <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.3)" }}>{n.role}{n.location ? ` · ${n.location}` : ""}</div>
+                          </div>
+                          <button type="button" onClick={() => setModuleCore({ ...moduleCore, npcs: moduleCore.npcs.filter((_, j) => j !== i) })}
+                            style={{ background: "none", border: "none", color: "rgba(255,100,80,0.5)", cursor: "pointer", fontSize: "calc(12px*var(--app-text-scale,1))", fontFamily: "inherit", padding: 2 }}>✕</button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => setModuleCore({ ...moduleCore, npcs: [...moduleCore.npcs, { name: "新NPC", personality: "", role: "info" }] })}
+                        style={{ padding: "7px 0", borderRadius: 7, border: "1px dashed rgba(200,160,100,0.25)", background: "transparent", color: "rgba(200,160,100,0.5)", fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit" }}>+ 添加NPC</button>
+                    </div>
+                  )}
+                  {coreTab === "truth" && (
+                    <textarea value={moduleCore.truth} onChange={e => setModuleCore({ ...moduleCore, truth: e.target.value })}
+                      placeholder="真相与背景（可编辑）"
+                      style={{ width: "100%", minHeight: 120, padding: "8px 10px", borderRadius: 7, border: "1px solid rgba(200,160,100,0.15)", background: "rgba(0,0,0,0.25)", color: "#d8cbb8", fontSize: "calc(11px*var(--app-text-scale,1))", fontFamily: "inherit", lineHeight: 1.6, resize: "vertical", outline: "none", boxSizing: "border-box" }} />
+                  )}
+                  {coreTab === "acts" && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 220, overflowY: "auto" }}>
+                      {moduleCore.acts.map((a, i) => (
+                        <div key={i} style={{ padding: "7px 9px", borderRadius: 7, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(200,160,100,0.08)" }}>
+                          <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+                            <input value={a.title} onChange={e => setModuleCore({ ...moduleCore, acts: moduleCore.acts.map((x, j) => j === i ? { ...x, title: e.target.value } : x) })}
+                              style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "#e8d0a0", fontSize: "calc(11px*var(--app-text-scale,1))", fontFamily: "inherit" }} />
+                            <button type="button" onClick={() => setModuleCore({ ...moduleCore, acts: moduleCore.acts.filter((_, j) => j !== i) })}
+                              style={{ background: "none", border: "none", color: "rgba(255,100,80,0.5)", cursor: "pointer", fontSize: "calc(12px*var(--app-text-scale,1))", fontFamily: "inherit" }}>✕</button>
+                          </div>
+                          <textarea value={a.summary} onChange={e => setModuleCore({ ...moduleCore, acts: moduleCore.acts.map((x, j) => j === i ? { ...x, summary: e.target.value } : x) })}
+                            style={{ width: "100%", minHeight: 56, background: "transparent", border: "none", outline: "none", color: "rgba(255,255,255,0.55)", fontSize: "calc(10px*var(--app-text-scale,1))", fontFamily: "inherit", lineHeight: 1.5, resize: "vertical" }} />
+                          {a.nodes.length > 0 && <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.3)", marginTop: 3 }}>📍 {a.nodes.join("、")}</div>}
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => setModuleCore({ ...moduleCore, acts: [...moduleCore.acts, { index: moduleCore.acts.length, title: `第${moduleCore.acts.length + 1}幕`, summary: "", nodes: [], secrets: [], stageBrief: "" }] })}
+                        style={{ padding: "7px 0", borderRadius: 7, border: "1px dashed rgba(200,160,100,0.25)", background: "transparent", color: "rgba(200,160,100,0.5)", fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit" }}>+ 添加一幕</button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
