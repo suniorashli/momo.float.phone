@@ -608,6 +608,12 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 
 【位置更新】如果剧情中队伍移动到了新地点，move_to必须填写目的地节点名（从地图节点中选）。不填则位置不变。
 
+【演出资源】（仅当上下文存在[演出资源清单]时生效）
+- cg字段：剧情走到清单中某张CG对应的场景时，填它的资源名（如"cg":"教堂_夜晚"）——前端会全屏展示这张图。一幕最多报1张CG，场景不匹配就留空""
+- bgm字段：氛围发生明显切换时（紧张→舒缓、白天→夜晚、平静→恐怖），填BGM资源名。氛围没变就留空""（前端继续播上一首）
+- 立绘不需要你输出——npc_lines里speaker的名字匹配到立绘时前端自动显示
+- 只填资源名，绝不要描述图片/音乐内容，也不要编造清单里没有的资源名
+
 【旁白排版】
 - narration 必须按自然段分段书写。场景变化、人物动作、气氛描写、结果揭示之间要换段。
 - 在 narration 字符串内部使用 \\n\\n 表示空行换段，不要把整段旁白挤成一整块。
@@ -619,7 +625,7 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
-{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动，像是在提醒来客这里并不太平。\\n\\n柜台后的老板抬起头，看了队伍一眼。柜台上摆着一盏油灯和一本翻开的住宿登记簿。","npc_lines":[{"speaker":"老板","text":"「这么晚才来？就剩两间房了。」他打量着来客，手指无意识地敲着登记簿。"}],"situation":"角色们看到的（传给角色AI）","choices":[],"hints":[{"label":"翻看住宿登记簿","skillHint":"图书馆使用"},{"label":"观察老板的神色","skillHint":"心理学"},{"label":"留意屋外的动静","skillHint":"聆听"}],"topics":[{"label":"问起最近的怪事","skillHint":"话术"}],"clues":["登记簿上有一个被划掉的名字"],"investigation_done":false,"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品或SAN-5"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
+{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动，像是在提醒来客这里并不太平。\\n\\n柜台后的老板抬起头，看了队伍一眼。柜台上摆着一盏油灯和一本翻开的住宿登记簿。","npc_lines":[{"speaker":"老板","text":"「这么晚才来？就剩两间房了。」他打量着来客，手指无意识地敲着登记簿。"}],"situation":"角色们看到的（传给角色AI）","cg":"","bgm":"","choices":[],"hints":[{"label":"翻看住宿登记簿","skillHint":"图书馆使用"},{"label":"观察老板的神色","skillHint":"心理学"},{"label":"留意屋外的动静","skillHint":"聆听"}],"topics":[{"label":"问起最近的怪事","skillHint":"话术"}],"clues":["登记簿上有一个被划掉的名字"],"investigation_done":false,"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品或SAN-5"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
 
 export type DMSceneResult = {
   narration: string;
@@ -631,6 +637,8 @@ export type DMSceneResult = {
   clues?: string[];
   investigationDone?: boolean;
   sideScenes?: { who: string; npc: string; intent?: string; summary?: string }[];
+  cg?: string;
+  bgm?: string;
   journal: string;
   gained: string[];
   lost: string[];
@@ -692,6 +700,8 @@ export type DMContext = {
   currentAct?: number;
   // Fork 九期B: discovered region ids (for map slimming; undefined = full map, legacy)
   discoveredRegionIds?: string[];
+  // Fork 十期: stage asset manifest (names only — images/audio never enter prompts)
+  assetManifest?: string;
 };
 
 /** Truncate an array of strings from the oldest, keeping newest within token budget */
@@ -767,7 +777,10 @@ function buildDMUserMsg(ctx: DMContext): string {
 ${ctx.partySecrets.map(s => `${s.who}：${s.secret.content}（咬合点：${s.secret.link}${s.secret.informant ? `；知情者：${s.secret.informant}` : ""}）`).join("\n")}` : "";
   const lockedBlock = ctx.lockedLogSummary && ctx.lockedLogSummary.length > 0 ? `\n[锁档私聊]（发生过但其他调查员不知情的私下交谈）
 ${ctx.lockedLogSummary.join("\n")}` : "";
-  const dmBlock = dm ? `${secretsBlock}${lockedBlock}\n[密档]
+  // Fork 十期: asset cue manifest (one page of names)
+  const assetBlock = ctx.assetManifest ? `\n[演出资源清单]（只有名字；剧情对应时输出字段触发前端展示，绝不描述图片内容）
+${ctx.assetManifest}` : "";
+  const dmBlock = dm ? `${secretsBlock}${lockedBlock}${assetBlock}\n[密档]
 真相：${dm.hiddenTruth}
 ${ctx.npcSecret ? `当前NPC秘密：${ctx.npcSecret}` : ""}
 NPC秘密：${Object.entries(dm.npcSecrets).map(([k, v]) => `${k}→${v}`).join("；")}
@@ -928,6 +941,8 @@ export async function dmScene(ctx: DMContext, apiConfig: ApiConfig): Promise<DMS
     moveTo: p.move_to ?? p.moveTo ?? "",
     worldEvents: (p.world_events || p.worldEvents || []).map((event: string) => String(event || "")),
     ending: p.ending || false,
+    cg: typeof p.cg === "string" ? p.cg : "",
+    bgm: typeof p.bgm === "string" ? p.bgm : "",
     hints: (p.hints || []).map((h: Record<string, unknown>) => ({
       label: String(h.label || ""),
       skillHint: h.skillHint ? String(h.skillHint) : (h.skill_hint ? String(h.skill_hint) : undefined),
@@ -1066,6 +1081,8 @@ export async function expandEvent(
     moveTo: dm.moveTo,
     worldEvents: dm.worldEvents,
     ending: dm.ending,
+    cg: dm.cg,
+    bgm: dm.bgm,
   };
 }
 
@@ -1370,6 +1387,8 @@ async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneR
     moveTo: p.move_to ?? p.moveTo ?? "",
     worldEvents: (p.world_events || p.worldEvents || []).map((event: string) => String(event || "")),
     ending: p.ending || false,
+    cg: typeof p.cg === "string" ? p.cg : "",
+    bgm: typeof p.bgm === "string" ? p.bgm : "",
     topics: (p.topics || []).map((t: Record<string, unknown>) => ({
       label: String(t.label || ""),
       skillHint: t.skillHint ? String(t.skillHint) : (t.skill_hint ? String(t.skill_hint) : undefined),
@@ -1416,6 +1435,8 @@ export async function resolveRound(
     moveTo: dm.moveTo,
     worldEvents: dm.worldEvents,
     ending: dm.ending,
+    cg: dm.cg,
+    bgm: dm.bgm,
     topics: dm.topics,
     clues: dm.clues,
     investigationDone: dm.investigationDone,

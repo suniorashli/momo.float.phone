@@ -159,6 +159,16 @@ export type ModuleAct = {
   stageBrief: string;     // 主线阶段简介（映射到 mainQuest stage）
 };
 
+// ── Stage assets (fork 十期: portraits / CG / BGM — images never enter prompts, KP only "calls the cue") ──
+export type StageAsset = {
+  id: string;
+  kind: "portrait" | "cg" | "bgm";
+  name: string;            // 资源名（KP 清单里的名字，语义化命名很重要）
+  boundTo?: string;        // portrait: 绑定的 NPC 名；cg/bgm 可空
+  fileName: string;
+  note?: string;           // 什么时候用（给 KP 的提示，可选）
+};
+
 // ── DM (Dungeon Master) System ──
 
 /** DM's secret knowledge — the full truth behind the world */
@@ -281,12 +291,16 @@ export type GameSave = {
   lockedLog?: { id: string; who: string; npc?: string; text: string; day: string }[]; // 锁档私聊流（结局揭晓；八期B 填充）
   // ── fork 九期B: staged acts ──
   currentAct?: number;             // 当前幕索引（skeleton.acts[currentAct]）
+  // ── fork 十期: stage cues fired by KP (rendered client-side; assets stay local) ──
+  pendingCg?: string;              // 待展示的 CG 资源名
+  pendingBgm?: string;             // 待切换的 BGM 资源名
 };
 
 // ── MapWorld (stored in IndexedDB) — world is independent of characters ──
 export type MapWorld = {
   id: string;
   skeleton: WorldSkeleton;
+  assets?: StageAsset[];      // fork 十期: stage asset manifest (image/audio blobs live in IDB, not here)
   renderedMap: import("./map-engine").MapGenerationOutput;
   createdAt: string;
   updatedAt: string;
@@ -357,6 +371,8 @@ export type EventDialogue = {
 
 export type EventScene = {
   background?: string;         // scene description (for atmosphere)
+  cg?: string;                 // fork 十期: CG 资源名（KP 报幕，前端取图全屏展示）
+  bgm?: string;                // fork 十期: BGM 资源名（前端循环播放，直到下一首）
   dialogues: EventDialogue[];
   choices?: EventChoice[];
   hints?: { label: string; skillHint?: string }[];  // fork: investigation prompts (CoC loop — player decides actions)

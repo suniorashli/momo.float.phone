@@ -14,7 +14,9 @@ import { loadCharacters } from "@/lib/character-storage";
 import { loadApiConfigs, loadBindingConfig, resolveBinding, resolveUserIdentity, resolveAuxiliaryApiConfig } from "@/lib/settings-storage";
 import { expandEvent, companionDeclare, resolveRound, rollD100, resolveCheckStat, ROLL_LABELS, formatGameTime, advanceTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
 import { skillCheckValue, resolveAttack, rollExpr, dbFromStats, findWeaponMention, LEVEL_LABEL, sanityLossVerdict, rollTemporaryMadness, buildInitiative, makeHostile, canSpendLuck, rollD100WithDice, type RollLevel, type HostileCombatant } from "@/lib/coc-sheet";
-import { STAT_LABELS, ALL_STATS } from "@/lib/map-types";
+import { STAT_LABELS, ALL_STATS, type StageAsset } from "@/lib/map-types";
+import { getAssetUrl, buildAssetManifest, registerAssetFiles, deleteAssetBlob } from "@/lib/stage-assets";
+import { saveMapWorld } from "@/lib/map-storage";
 import MapRenderer from "./map-renderer";
 import MapTextStream from "./map-text-stream";
 
@@ -62,6 +64,12 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   // Fork 八期B: private-talk toggle — when on, the declaration goes through the locked pipeline
   const [privateTalk, setPrivateTalk] = useState(false);
   const [privateTalkNpc, setPrivateTalkNpc] = useState("");
+  // Fork 十期: stage cues — CG overlay + BGM player
+  const [cgOverlay, setCgOverlay] = useState<{ name: string; url: string } | null>(null);
+  const [currentBgm, setCurrentBgm] = useState<string>("");
+  const bgmAudioRef = useRef<HTMLAudioElement | null>(null);
+  const bgmNameRef = useRef("");
+  const [showAssetPanel, setShowAssetPanel] = useState(false);
   const [currentHints, setCurrentHints] = useState<{ label: string; skillHint?: string }[] | null>(save.pendingEvent?.hints || null);
   // Fork: NPC talk topics from KP (tappable → fills speech input)
   const [currentTopics, setCurrentTopics] = useState<{ label: string; skillHint?: string }[] | null>(null);
@@ -215,6 +223,52 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     }
     return map;
   }, [userIdentity, save.agents, characters]);
+
+  // Fork 十期: stage assets — local mirror of world.assets (panel edits persist via saveMapWorld)
+  const [assets, setAssets] = useState<StageAsset[]>(world.assets || []);
+  const updateAssets = useCallback((next: StageAsset[]) => {
+    setAssets(next);
+    saveMapWorld({ ...world, assets: next });
+  }, [world]);
+  // NPC portraits — load object URLs once (cached in state)
+  const [portraitMap, setPortraitMap] = useState<Record<string, string>>({});
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const portraits = assets.filter(a => a.kind === "portrait" && a.boundTo);
+      for (const p of portraits) {
+        const url = await getAssetUrl(p.id);
+        if (cancelled) { if (url) URL.revokeObjectURL(url); return; }
+        if (url) setPortraitMap(prev => ({ ...prev, [p.boundTo!]: url }));
+      }
+    })();
+  }, [assets]);
+  const fullAvatarMap = useMemo(() => ({ ...avatarMap, ...portraitMap }), [avatarMap, portraitMap]);
+  // Fire CG/BGM cues from a DM result (KP reports names; blobs resolved locally)
+  const fireStageCues = useCallback((sc: { cg?: string; bgm?: string }) => {
+    if (sc.bgm && sc.bgm !== bgmNameRef.current) {
+      const asset = assets.find(a => a.kind === "bgm" && (a.name === sc.bgm || a.fileName.includes(sc.bgm as string)));
+      if (asset) {
+        getAssetUrl(asset.id).then(url => {
+          if (!url) return;
+          bgmNameRef.current = sc.bgm as string;
+          setCurrentBgm(sc.bgm as string);
+          if (bgmAudioRef.current) {
+            bgmAudioRef.current.src = url;
+            bgmAudioRef.current.loop = true;
+            bgmAudioRef.current.volume = 0.35;
+            bgmAudioRef.current.play().catch(() => undefined);
+          }
+        });
+      }
+    }
+    if (sc.cg) {
+      const asset = assets.find(a => a.kind === "cg" && (a.name === sc.cg || a.fileName.includes(sc.cg as string)));
+      if (asset) {
+        getAssetUrl(asset.id).then(url => { if (url) setCgOverlay({ name: sc.cg as string, url }); });
+      }
+    }
+  }, [assets]);
   const bilingualTranslationEnabled = adventureConfig.bilingualTranslationEnabled === true;
   const defaultTranslationExpanded = adventureConfig.collapseBilingualTranslation !== true;
 
@@ -485,6 +539,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         ],
         acts: skeleton.acts,
         currentAct: save.currentAct ?? 0,
+        assetManifest: buildAssetManifest(assets),
         discoveredRegionIds: [...discoveredRegions].map(idx => skeleton.mapInput.regions[idx]?.id).filter(Boolean) as string[],
         partyStatus: {
           hp: save.hp,
@@ -533,6 +588,9 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       if (scene.investigationDone) {
         pushMessages({ id: mkId(), type: "system", text: "🔎 本地点的调查已告一段落，继续停留难有新发现——考虑转移地点" });
       }
+
+      // Fork 十期: stage cues — fire CG / BGM when KP reported them
+      fireStageCues(scene as EventScene & { cg?: string; bgm?: string });
 
       // Push dialogues to text stream
       pushSceneToStream(scene);
@@ -1055,6 +1113,9 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         }
         persistSave(timedSave);
       }
+
+      // Fork 十期: fire cues from the resolve round too
+      fireStageCues(continuation as EventScene & { cg?: string; bgm?: string });
 
       // Push DM continuation to stream
       if (continuation.dialogues.length > 0) {
@@ -1969,6 +2030,22 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               <Bug size={16} color="var(--c-adv-accent)" />
               <span>调试记录</span>
             </button>
+            <button
+              onClick={() => {
+                setShowTopActionMenu(false);
+                setShowAssetPanel(true);
+              }}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 9,
+                width: "100%", minHeight: 44, padding: "0 10px", borderRadius: 10,
+                border: "none", background: "transparent",
+                color: "var(--c-adv-text)", fontSize: "calc(12px*var(--app-text-scale,1))", fontFamily: "inherit", cursor: "pointer", textAlign: "left",
+                boxSizing: "border-box",
+              }}
+            >
+              <Palette size={16} color="var(--c-adv-accent)" />
+              <span>演出资源</span>
+            </button>
           </div>
         </>
       )}
@@ -2008,7 +2085,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       <div style={{ flex: 1, position: "relative", overflow: "hidden", background: "transparent", display: "flex", flexDirection: "column", zIndex: 1 }}>
         <MapTextStream
           messages={streamMessages}
-          avatarMap={avatarMap}
+          avatarMap={fullAvatarMap}
           fontFamily={customFontFamily}
           fontScale={worldTheme.fontScale}
           lineHeightScale={worldTheme.lineHeightScale}
@@ -4021,6 +4098,108 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             />
           )}
 
+        </div>
+      )}
+
+      {/* ═══ Stage cue renderers (fork 十期) ═══ */}
+      {/* BGM audio element (hidden; KP cue or manual control) */}
+      <audio ref={bgmAudioRef} loop preload="none" />
+      {/* BGM indicator + mute */}
+      {currentBgm && (
+        <button type="button" onClick={() => {
+          const el = bgmAudioRef.current;
+          if (!el) return;
+          if (el.paused) el.play().catch(() => undefined); else el.pause();
+        }} style={{
+          position: "absolute", left: 10, top: "calc(var(--page-header-safe-top, 48px) + 46px)", zIndex: 30,
+          padding: "3px 10px", borderRadius: 12,
+          border: "1px solid rgba(150,200,170,0.3)", background: "rgba(10,14,12,0.7)",
+          color: "rgba(180,230,200,0.85)", fontSize: "calc(9px*var(--app-text-scale,1))",
+          cursor: "pointer", fontFamily: "monospace", letterSpacing: "0.05em",
+          backdropFilter: "blur(6px)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }} title="点击暂停/播放 BGM">
+          ♪ {currentBgm}
+        </button>
+      )}
+
+      {/* CG fullscreen overlay (tap to dismiss) */}
+      {cgOverlay && (
+        <div onClick={() => setCgOverlay(null)} style={{
+          position: "absolute", inset: 0, zIndex: 75,
+          background: "rgba(0,0,0,0.92)",
+          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+          cursor: "pointer", animation: "cg-fade-in 0.5s ease-out",
+        }}>
+          <style>{`@keyframes cg-fade-in { from { opacity: 0; } to { opacity: 1; } }`}</style>
+          <img src={cgOverlay.url} alt={cgOverlay.name} style={{ maxWidth: "100%", maxHeight: "86vh", objectFit: "contain", boxShadow: "0 24px 80px rgba(0,0,0,0.8)" }} />
+          <div style={{ marginTop: 14, fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.35)", fontFamily: "monospace", letterSpacing: "0.2em" }}>
+            🎞 {cgOverlay.name} · 点击任意处继续
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Asset panel (fork 十期 — upload / bind / manual CG) ═══ */}
+      {showAssetPanel && (
+        <div style={{ position: "absolute", inset: 0, zIndex: 66, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowAssetPanel(false)}>
+          <div onClick={e => e.stopPropagation()} style={{
+            width: "min(420px, 100%)", maxHeight: "80vh", overflowY: "auto",
+            background: "var(--c-adv-panel-bg)", borderRadius: 14, border: "1px solid var(--c-adv-input-border)",
+            padding: "16px 14px",
+          }}>
+            <div style={{ fontSize: "calc(14px*var(--app-text-scale,1))", fontWeight: 700, color: "var(--c-adv-text)", marginBottom: 4 }}>🎞 演出资源</div>
+            <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+              图片/音频存本地，AI 只看名字清单。命名建议：立绘=「NPC名.png」，CG 前缀「cg_」，BGM 前缀「bgm_」
+            </div>
+            {/* Upload */}
+            <label style={{
+              display: "block", padding: "10px 0", borderRadius: 8, textAlign: "center",
+              border: "1px dashed rgba(200,160,100,0.3)", background: "transparent",
+              color: "rgba(200,160,100,0.8)", fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+              marginBottom: 12,
+            }}>
+              + 上传立绘 / CG / BGM（可多选）
+              <input type="file" multiple accept="image/*,audio/*" hidden onChange={async e => {
+                const files = Array.from(e.target.files || []);
+                if (!files.length) return;
+                const npcNames = [...skeleton.npcs.map(n => n.name), ...skeleton.richRegions.flatMap(r => r.l2_nodes.map(n => n.npc?.name).filter(Boolean) as string[])];
+                const { assets: next, skipped } = await registerAssetFiles(world.id, files, npcNames, assets);
+                updateAssets(next);
+                if (skipped.length) pushMessages({ id: mkId(), type: "system", text: `⚠ 已跳过不支持的文件：${skipped.join("、")}` });
+                else pushMessages({ id: mkId(), type: "system", text: `🎞 已登记 ${files.length - skipped.length} 个演出资源` });
+              }} />
+            </label>
+            {/* Asset list */}
+            {assets.length === 0 ? (
+              <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", textAlign: "center", padding: "16px 0" }}>还没有演出资源</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {assets.map(a => (
+                  <div key={a.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "7px 9px", borderRadius: 8, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)" }}>
+                    <span style={{ fontSize: "calc(12px*var(--app-text-scale,1))" }}>{a.kind === "portrait" ? "👤" : a.kind === "cg" ? "🖼" : "🎵"}</span>
+                    <input value={a.name} onChange={e => updateAssets(assets.map(x => x.id === a.id ? { ...x, name: e.target.value } : x))}
+                      style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: "var(--c-adv-text)", fontSize: "calc(11px*var(--app-text-scale,1))", fontFamily: "inherit" }} />
+                    {a.kind === "portrait" && (
+                      <input value={a.boundTo || ""} placeholder="绑定NPC名" onChange={e => updateAssets(assets.map(x => x.id === a.id ? { ...x, boundTo: e.target.value } : x))}
+                        style={{ width: 90, background: "transparent", border: "none", borderBottom: "1px dashed var(--c-adv-input-border)", outline: "none", color: "var(--c-adv-accent-dim)", fontSize: "calc(10px*var(--app-text-scale,1))", fontFamily: "inherit", textAlign: "center" }} />
+                    )}
+                    {(a.kind === "cg" || a.kind === "bgm") && (
+                      <button type="button" onClick={() => fireStageCues({ cg: a.kind === "cg" ? a.name : undefined, bgm: a.kind === "bgm" ? a.name : undefined })}
+                        style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--c-adv-accent-dim)", background: "transparent", color: "var(--c-adv-accent)", fontSize: "calc(9px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+                        试演
+                      </button>
+                    )}
+                    <button type="button" onClick={() => { deleteAssetBlob(a.id); updateAssets(assets.filter(x => x.id !== a.id)); }}
+                      style={{ background: "none", border: "none", color: "rgba(255,100,80,0.5)", cursor: "pointer", fontSize: "calc(13px*var(--app-text-scale,1))", fontFamily: "inherit", padding: 2 }}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button onClick={() => setShowAssetPanel(false)} style={{
+              width: "100%", marginTop: 12, padding: "10px 0", borderRadius: 9,
+              border: "1px solid var(--c-adv-input-border)", background: "transparent",
+              color: "var(--c-adv-text-dim)", fontSize: "calc(12px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+            }}>关闭</button>
+          </div>
         </div>
       )}
 
