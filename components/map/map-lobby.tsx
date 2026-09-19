@@ -27,6 +27,7 @@ import {
 } from "@/lib/map-storage";
 import { generateWorldSkeleton, DEFAULT_WORLD_GEN_PROMPT, DEFAULT_DM_SCENE_PROMPT, DEFAULT_DM_RESOLVE_PROMPT, DEFAULT_DM_ENDING_PROMPT, DEFAULT_ADVENTURE_SUMMARY_PROMPT } from "@/lib/map-rpg-engine";
 import { extractNpcsFromText, extractTruthFromText, extractActsFromText, assembleSkeletonFromCore } from "@/lib/module-core";
+import { importInvestigator } from "@/lib/investigator-import";
 import type { ModuleCore, ModuleAct } from "@/lib/map-types";
 import { generateMap, type GeoJSONData } from "@/lib/map-engine";
 import { loadApiConfigs, loadBindingConfig, resolveBinding } from "@/lib/settings-storage";
@@ -289,9 +290,14 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         saveMapWorld(world);
         const startNode = renderedMap.l1Nodes[0]?.id || "l1_0";
         let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
+        // Fork 十一期: persona import (module-core assembly path — same adaptation as LLM path)
         for (const cid of charIdsSnapshot) {
           const ch = characters.find(c => c.id === cid);
-          save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets);
+          let persona: import("@/lib/map-types").InvestigatorPersona | undefined;
+          try {
+            persona = await importInvestigator(ch?.name || "调查员", ch?.personality || "", skeleton, skeleton.personalSecrets?.[save.agents.length], apiConfig);
+          } catch { /* fallback */ }
+          save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets, persona);
         }
         const discovered: string[] = [startNode];
         renderedMap.l2Nodes.forEach((n, i) => { if (n.regionIdx === 0) discovered.push(`l2_${i}`); });
@@ -351,9 +357,14 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
       // 5. Create initial save with selected characters
       const startNode = renderedMap.l1Nodes[0]?.id || "l1_0";
       let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
+      // Fork 十一期: persona import — adapt each companion to the module era (LLM, fallback to raw card)
       for (const cid of charIdsSnapshot) {
         const ch = characters.find(c => c.id === cid);
-        save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets);
+        let persona: import("@/lib/map-types").InvestigatorPersona | undefined;
+        try {
+          persona = await importInvestigator(ch?.name || "调查员", ch?.personality || "", skeleton, skeleton.personalSecrets?.[save.agents.length] , apiConfig);
+        } catch { /* fallback: no persona */ }
+        save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets, persona);
       }
       const startRegionIdx = 0;
       const discovered: string[] = [startNode];

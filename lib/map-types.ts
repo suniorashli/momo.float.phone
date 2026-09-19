@@ -159,6 +159,18 @@ export type ModuleAct = {
   stageBrief: string;     // 主线阶段简介（映射到 mainQuest stage）
 };
 
+// ── Investigator import (fork 十一期: persona adapted to the module era/setting) ──
+export type InvestigatorPersona = {
+  name: string;           // 名字（保留原名或时代化别名）
+  era: string;            // 时代（如「1920年代新英格兰」）
+  occupation: string;     // 时代化职业显示名（捕快/私家侦探/神学生）
+  refOccupation?: string; // 技能模板参考职业（映射 OCCUPATIONS 表，用于掷骰技能组）
+  background: string;     // 身份背景（这个时代的身份、来此缘由，2-4句）
+  keepTraits: string;     // 性格保持（角色卡核心性格不变的部分）
+  changes: string;        // 时代适配调整（警察→捕快之类的说明）
+  hooks: string;          // 与模组/秘密的连接点
+};
+
 // ── Stage assets (fork 十期: portraits / CG / BGM — images never enter prompts, KP only "calls the cue") ──
 export type StageAsset = {
   id: string;
@@ -324,6 +336,7 @@ export type CharacterAgent = {
   journal: JournalEntry[];
   affinity: number;            // towards user, 0-100
   stats: CharStats;
+  persona?: InvestigatorPersona;  // fork 十一期: module-adapted persona (overrides raw character card in-game)
   sheet?: CharSheet;           // CoC6 sheet for this companion
   madness?: { temporary?: { rounds: number; symptom: string }; permanent?: boolean };
 };

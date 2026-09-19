@@ -1121,7 +1121,7 @@ export async function companionDeclare(
   streamLog?: import("./map-types").StreamMessage[],
   overrideUserIdentity?: import("../components/settings/user-identity").UserIdentity | null,
   overrideAffinity?: number,
-  options?: { instruction?: string; secretHint?: string },
+  options?: { instruction?: string; secretHint?: string; personaHint?: string },
 ): Promise<Declaration> {
   const allChars = loadCharacters();
   const character = allChars.find(c => c.id === characterId);
@@ -1181,7 +1181,7 @@ async function buildCompanionDeclarePromptPayload(
   streamLog?: import("./map-types").StreamMessage[],
   overrideUserIdentity?: import("../components/settings/user-identity").UserIdentity | null,
   overrideAffinity?: number,
-  options?: { instruction?: string; secretHint?: string },
+  options?: { instruction?: string; secretHint?: string; personaHint?: string },
 ) {
   const allChars = loadCharacters();
   const character = allChars.find(c => c.id === characterId);
@@ -1223,9 +1223,13 @@ async function buildCompanionDeclarePromptPayload(
 4) 想清楚你为什么这么做——按你的人设和当前处境行动，不要人云亦云`,
     userIdentity?.name,
   );
-  const historyContentFinal = options?.secretHint?.trim()
+  let historyContentFinal = options?.secretHint?.trim()
     ? `${historyContent}\n\n${options.secretHint.trim()}`
     : historyContent;
+  // Fork 十一期: module-era persona overrides the raw card (时代职业/背景/性格保持)
+  if (options?.personaHint?.trim()) {
+    historyContentFinal = `${options.personaHint.trim()}\n\n${historyContentFinal}`;
+  }
   const history = [
     ...pastHistory,
     { id: "adv_declare", sessionId: "", role: "user" as const, content: historyContentFinal, status: "sent" as const, createdAt: new Date().toISOString() },

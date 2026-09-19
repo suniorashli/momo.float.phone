@@ -694,7 +694,12 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         if (pendingIds.length > 0) {
           setLoadingPhase("companions");
           for (const cid of pendingIds) {
-            const decl = await companionDeclare(cid, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, save.agents.find(a => a.characterId === cid)?.affinity, save.agentSecrets?.[cid] ? { secretHint: `【你的秘密】${save.agentSecrets[cid].content}（与真相的咬合点：${save.agentSecrets[cid].link}${save.agentSecrets[cid].informant ? `；${save.agentSecrets[cid].informant}知道更多——你可以私下找TA求证）` : "）"}\n这是只有你知道的事。平时言行可以露出破绽（欲言又止、回避话题、偷偷做小动作），但不要直接说破；何时摊牌由你决定。不要在宣言里向队友透露秘密内容，除非你决定此刻公开它。` } : undefined);
+            const declAgent = save.agents.find(a => a.characterId === cid);
+            const personaHint = declAgent?.persona ? `【你的模组内人设】（以此身份行动，覆盖角色卡的现代设定）\n时代：${declAgent.persona.era}\n身份：${declAgent.persona.occupation}——${declAgent.persona.background}\n性格不变的部分：${declAgent.persona.keepTraits}\n${declAgent.persona.changes ? `时代调整：${declAgent.persona.changes}\n` : ""}你的言行、物品、习惯都必须属于这个时代，不要出现时代外元素。` : undefined;
+            const decl = await companionDeclare(cid, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, declAgent?.affinity, {
+              ...(save.agentSecrets?.[cid] ? { secretHint: `【你的秘密】${save.agentSecrets[cid].content}（与真相的咬合点：${save.agentSecrets[cid].link}${save.agentSecrets[cid].informant ? `；${save.agentSecrets[cid].informant}知道更多——你可以私下找TA求证）` : "）"}\n这是只有你知道的事。平时言行可以露出破绽（欲言又止、回避话题、偷偷做小动作），但不要直接说破；何时摊牌由你决定。不要在宣言里向队友透露秘密内容，除非你决定此刻公开它。` } : {}),
+              ...(personaHint ? { personaHint } : {}),
+            });
 
             if (decl.failed) {
               pushMessages({ id: mkId(), type: "system", text: `${decl.speaker} 回复失败` });
@@ -1395,7 +1400,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               streamRef.current,
               save.agents.length > 1 ? userIdentity : undefined,
               save.agents.find(a => a.characterId === cid)?.affinity,
-              { instruction: exitReactionInstruction, secretHint: save.agentSecrets?.[cid] ? `【你的秘密】${save.agentSecrets[cid].content}——是否透露、何时摊牌由你决定。` : undefined },
+              { instruction: exitReactionInstruction, secretHint: save.agentSecrets?.[cid] ? `【你的秘密】${save.agentSecrets[cid].content}——是否透露、何时摊牌由你决定。` : undefined, personaHint: save.agents.find(a => a.characterId === cid)?.persona ? `【你的模组内人设】${save.agents.find(a => a.characterId === cid)!.persona!.occupation}——${save.agents.find(a => a.characterId === cid)!.persona!.background}（言行物品须属该时代）` : undefined },
             ))
           );
           for (const decl of decls) {
@@ -1672,7 +1677,12 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       const apiConfig = (slot?.apiConfigId ? apiConfigs.find(c => c.id === slot.apiConfigId) : null) || apiConfigs.find(c => c.apiKey) || apiConfigs[0];
       if (!apiConfig?.apiKey) throw new Error("未找到API配置");
 
-      const decl = await companionDeclare(characterId, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, save.agents.find(a => a.characterId === characterId)?.affinity, save.agentSecrets?.[characterId] ? { secretHint: `【你的秘密】${save.agentSecrets[characterId].content}——是否透露、何时摊牌由你决定。` } : undefined);
+      const fmAgent = save.agents.find(a => a.characterId === characterId);
+      const fmPersona = fmAgent?.persona ? `【你的模组内人设】${fmAgent.persona.occupation}——${fmAgent.persona.background}（时代：${fmAgent.persona.era}；言行物品须属这个时代）` : undefined;
+      const decl = await companionDeclare(characterId, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, fmAgent?.affinity, {
+        ...(save.agentSecrets?.[characterId] ? { secretHint: `【你的秘密】${save.agentSecrets[characterId].content}——是否透露、何时摊牌由你决定。` } : {}),
+        ...(fmPersona ? { personaHint: fmPersona } : {}),
+      });
 
       if (decl.speech && decl.speech !== "……") {
         pushMessages({ id: mkId(), type: "character", speaker: decl.speaker, text: decl.speech, emotion: decl.emotion });
@@ -3560,8 +3570,11 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                     }}>
                       <div style={{ fontWeight: 500, fontSize: "calc(12px*var(--app-text-scale,1))", color: "var(--c-adv-text)" }}>
                         {name}
-                        {a.sheet && <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", marginLeft: 6, fontWeight: 400 }}>{a.sheet.occupation} · 信用{a.sheet.creditRating}{a.sheet.weapons.length ? ` · ${a.sheet.weapons.map(w => w.name).join("、")}` : ""}</span>}
+                        {a.sheet && <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", marginLeft: 6, fontWeight: 400 }}>{a.persona?.occupation || a.sheet.occupation} · 信用{a.sheet.creditRating}{a.sheet.weapons.length ? ` · ${a.sheet.weapons.map(w => w.name).join("、")}` : ""}</span>}
                       </div>
+                      {a.persona?.background && (
+                        <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 2, lineHeight: 1.5 }}>{a.persona.background}</div>
+                      )}
                       <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 2 }}>
                         📍 {nodeName} · HP {a.hp}/{a.maxHp} · SAN {typeof a.san === "number" ? a.san : (a.stats?.san ?? "?")} · ❤️ {a.affinity}
                       </div>

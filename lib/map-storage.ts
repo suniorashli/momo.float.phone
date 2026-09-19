@@ -268,7 +268,7 @@ export function createInitialSave(worldId: string, startNodeId: string, edition:
 }
 
 /** Add a character agent to a save */
-export function addAgentToSave(save: GameSave, characterId: string, personality: string, edition: "coc6" | "coc7" = "coc6", pendingSecrets?: PersonalSecret[]): GameSave {
+export function addAgentToSave(save: GameSave, characterId: string, personality: string, edition: "coc6" | "coc7" = "coc6", pendingSecrets?: PersonalSecret[], persona?: import("./map-types").InvestigatorPersona): GameSave {
   if (save.agents.some(a => a.characterId === characterId)) return save;
   const p = personality.toLowerCase();
   const stats = rollStatsFromPersonality(p, edition);
@@ -280,6 +280,10 @@ export function addAgentToSave(save: GameSave, characterId: string, personality:
     agentSecrets = { ...save.agentSecrets, [characterId]: secret };
     pendingSecrets.shift();
   }
+  // Fork 十一期: persona import — use the era-adapted occupation for the skill template
+  const sheet = persona?.refOccupation
+    ? buildCoCSheet(stats, personality, persona.refOccupation, edition)
+    : buildCoCSheet(stats, personality, undefined, edition);
   const agent: CharacterAgent = {
     characterId,
     currentNodeId: save.currentNodeId,  // starts at user's location
@@ -294,7 +298,8 @@ export function addAgentToSave(save: GameSave, characterId: string, personality:
     journal: [],
     affinity: 15,
     stats,
-    sheet: buildCoCSheet(stats, personality, undefined, edition),
+    persona,
+    sheet,
   };
   return { ...save, agents: [...save.agents, agent], agentSecrets };
 }
