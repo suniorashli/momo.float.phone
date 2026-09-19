@@ -925,8 +925,6 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                 </div>
               )}
             </div>
-            </>)}
-            {/* ── End advanced options ── */}
 
             {/* ── Divider ── */}
             <div style={{ height: 1, background: "linear-gradient(90deg, transparent, rgba(200,160,100,0.15), transparent)", margin: "2px 0 14px" }} />
