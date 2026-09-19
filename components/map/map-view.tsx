@@ -290,27 +290,40 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       if (!apiConfig?.apiKey) return;
       const myName = userIdentity?.name || "调查员";
       const introSource = `${skeleton.world.name}：${skeleton.world.lore.slice(0, 260)}`;
-      // Player persona first → review modal opens as soon as it's ready
+      // Fork: table-feel — the KP opens the module and hands out identity cards one by one
+      pushMessages({ id: mkId(), type: "narration", text: `🎲 KP 翻开《${skeleton.world.name}》的模组，把几张空白身份卡摆在桌上——"稍等，各位的调查员身份还在拟写。"` });
+      // Player persona first → the review modal IS your card being handed over
       try {
         const persona = await importInvestigator(myName, `（用户本人）${introSource}`, skeleton, save.mySecret, apiConfig);
-        if (!cancelled && persona) persistSave({ ...saveRef.current, myPersona: { ...persona, confirmed: false } });
+        if (!cancelled && persona) {
+          persistSave({ ...saveRef.current, myPersona: { ...persona, confirmed: false } });
+          pushMessages({ id: mkId(), type: "system", text: "📇 KP 将一张身份卡推到你面前——请过目（弹窗已打开，可修改后确认）" });
+        } else if (!cancelled) {
+          pushMessages({ id: mkId(), type: "system", text: "📇 你的身份卡没能拟好——你将以调查员本人的身份入团" });
+        }
       } catch { /* fallback: no player persona */ }
       // Companions, one by one — each keeps its slot even on failure (raw card used)
       for (const a of saveRef.current.agents) {
         const ch = characters.find(c => c.id === a.characterId);
+        const name = ch?.name || "同伴";
         try {
-          const persona = await importInvestigator(ch?.name || "调查员", ch?.personality || "", skeleton, save.agentSecrets?.[a.characterId], apiConfig);
-          if (!cancelled && persona) persistSave({
-            ...saveRef.current,
-            agents: saveRef.current.agents.map(x => x.characterId === a.characterId ? { ...x, persona } : x),
-          });
+          const persona = await importInvestigator(name, ch?.personality || "", skeleton, save.agentSecrets?.[a.characterId], apiConfig);
+          if (!cancelled && persona) {
+            persistSave({
+              ...saveRef.current,
+              agents: saveRef.current.agents.map(x => x.characterId === a.characterId ? { ...x, persona } : x),
+            });
+            pushMessages({ id: mkId(), type: "system", text: `📇 KP 把身份卡递给 ${name}——${persona.era} · ${persona.occupation}` });
+          } else if (!cancelled) {
+            pushMessages({ id: mkId(), type: "system", text: `📇 ${name} 的身份卡在途中遗失——TA将以原本的面目加入调查` });
+          }
         } catch { /* fallback: raw card */ }
       }
       if (!cancelled) {
         const finalSave = { ...saveRef.current };
         delete finalSave.personaPending;
         persistSave(finalSave);
-        pushMessages({ id: mkId(), type: "system", text: "🎭 调查员身份已就绪" });
+        pushMessages({ id: mkId(), type: "narration", text: "🎭 身份卡分发完毕。KP 清了清嗓子——\"诸位，故事开始了。\"" });
       }
     })();
     return () => { cancelled = true; };
