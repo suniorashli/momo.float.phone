@@ -169,6 +169,7 @@ export type InvestigatorPersona = {
   keepTraits: string;     // 性格保持（角色卡核心性格不变的部分）
   changes: string;        // 时代适配调整（警察→捕快之类的说明）
   hooks: string;          // 与模组/秘密的连接点
+  confirmed?: boolean;    // fork 十二期: 玩家人设已审校确认（首次进入世界时过目）
 };
 
 // ── Stage assets (fork 十期: portraits / CG / BGM — images never enter prompts, KP only "calls the cue") ──
@@ -299,6 +300,7 @@ export type GameSave = {
   timeTicks?: number;                // 距上次时段推进的轮数计数
   // ── fork: secret party (八期A) ──
   mySecret?: PersonalSecret;                     // 用户的秘密（工具栏可见，摊牌时机由用户决定）
+  myPersona?: InvestigatorPersona;               // fork 十二期: 玩家的模组内人设（首次进入时审校确认）
   agentSecrets?: Record<string, PersonalSecret>; // characterId → 同伴的秘密（KP 可见；用户结局前不可见，幕后页揭晓）
   lockedLog?: { id: string; who: string; npc?: string; text: string; day: string }[]; // 锁档私聊流（结局揭晓；八期B 填充）
   // ── fork 九期B: staged acts ──

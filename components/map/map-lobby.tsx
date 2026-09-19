@@ -28,6 +28,7 @@ import {
 import { generateWorldSkeleton, DEFAULT_WORLD_GEN_PROMPT, DEFAULT_DM_SCENE_PROMPT, DEFAULT_DM_RESOLVE_PROMPT, DEFAULT_DM_ENDING_PROMPT, DEFAULT_ADVENTURE_SUMMARY_PROMPT } from "@/lib/map-rpg-engine";
 import { extractNpcsFromText, extractTruthFromText, extractActsFromText, assembleSkeletonFromCore } from "@/lib/module-core";
 import { importInvestigator } from "@/lib/investigator-import";
+import { resolveUserIdentity } from "@/lib/settings-storage";
 import type { ModuleCore, ModuleAct } from "@/lib/map-types";
 import { generateMap, type GeoJSONData } from "@/lib/map-engine";
 import { loadApiConfigs, loadBindingConfig, resolveBinding } from "@/lib/settings-storage";
@@ -290,6 +291,10 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         saveMapWorld(world);
         const startNode = renderedMap.l1Nodes[0]?.id || "l1_0";
         let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
+        // Fork 十二期: player persona import (assembly path)
+        try {
+          save.myPersona = await importInvestigator(userIdentity?.name || "调查员", `（用户本人）${description.slice(0, 400)}`, skeleton, save.mySecret, apiConfig);
+        } catch { /* fallback */ }
         // Fork 十一期: persona import (module-core assembly path — same adaptation as LLM path)
         for (const cid of charIdsSnapshot) {
           const ch = characters.find(c => c.id === cid);
@@ -357,6 +362,10 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
       // 5. Create initial save with selected characters
       const startNode = renderedMap.l1Nodes[0]?.id || "l1_0";
       let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
+      // Fork 十二期: player persona import too (reviewed on first world entry; falls back silently)
+      try {
+        save.myPersona = await importInvestigator(userIdentity?.name || "调查员", `（用户本人）${description.slice(0, 400)}`, skeleton, save.mySecret, apiConfig);
+      } catch { /* fallback: no persona */ }
       // Fork 十一期: persona import — adapt each companion to the module era (LLM, fallback to raw card)
       for (const cid of charIdsSnapshot) {
         const ch = characters.find(c => c.id === cid);
@@ -734,6 +743,41 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
               {extractProgress && (
                 <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(200,200,140,0.7)", marginTop: 6, fontFamily: "monospace" }}>{extractProgress}</div>
               )}
+              {/* Core pack export/import (fork 十二期 — reuse reviewed extraction) */}
+              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                <button type="button" onClick={() => {
+                  if (!moduleCore) return;
+                  const blob = new Blob([JSON.stringify(moduleCore, null, 2)], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url; a.download = `module-core-${Date.now()}.json`; a.click();
+                  URL.revokeObjectURL(url);
+                }} style={{
+                  flex: 1, padding: "7px 0", borderRadius: 7, border: "1px solid var(--c-adv-input-border, rgba(200,160,100,0.15))", background: "transparent",
+                  color: "rgba(200,160,100,0.75)", fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                }}>⬆ 导出核心包</button>
+                <label style={{
+                  flex: 1, padding: "7px 0", borderRadius: 7, border: "1px solid var(--c-adv-input-border, rgba(200,160,100,0.15))", background: "transparent",
+                  color: "rgba(200,160,100,0.75)", fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", textAlign: "center",
+                }}>
+                  ⬇ 导入核心包
+                  <input type="file" accept=".json,application/json" hidden onChange={e => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      try {
+                        const core = JSON.parse(String(reader.result || "")) as ModuleCore;
+                        if (!Array.isArray(core.npcs) || !Array.isArray(core.acts)) throw new Error("格式不符");
+                        setModuleCore(core);
+                      } catch (err) {
+                        setError(`核心包导入失败：${err instanceof Error ? err.message : String(err)}`);
+                      }
+                    };
+                    reader.readAsText(f, "utf-8");
+                  }} />
+                </label>
+              </div>
               {/* Review editor */}
               {moduleCore && (
                 <div style={{ marginTop: 10, borderTop: "1px solid rgba(200,160,100,0.12)", paddingTop: 10 }}>

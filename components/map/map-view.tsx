@@ -64,6 +64,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   // Fork 八期B: private-talk toggle — when on, the declaration goes through the locked pipeline
   const [privateTalk, setPrivateTalk] = useState(false);
   const [privateTalkNpc, setPrivateTalkNpc] = useState("");
+  // Fork 十二期: player persona review modal (first world entry)
+  const [personaReview, setPersonaReview] = useState<GameSave["myPersona"]>(save.myPersona && !save.myPersona.confirmed ? save.myPersona : null);
   // Fork 十期: stage cues — CG overlay + BGM player
   const [cgOverlay, setCgOverlay] = useState<{ name: string; url: string } | null>(null);
   const [currentBgm, setCurrentBgm] = useState<string>("");
@@ -540,6 +542,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         acts: skeleton.acts,
         currentAct: save.currentAct ?? 0,
         assetManifest: buildAssetManifest(assets),
+        playerPersona: save.myPersona ? `${save.myPersona.occupation}——${save.myPersona.background}${save.myPersona.hooks ? `（私下在意：${save.myPersona.hooks}）` : ""}` : undefined,
         discoveredRegionIds: [...discoveredRegions].map(idx => skeleton.mapInput.regions[idx]?.id).filter(Boolean) as string[],
         partyStatus: {
           hp: save.hp,
@@ -695,10 +698,14 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           setLoadingPhase("companions");
           for (const cid of pendingIds) {
             const declAgent = save.agents.find(a => a.characterId === cid);
+            // Fork 十二期: companion remembers their OWN private talks (lockedLog filtered by who)
+            const ownTalks = (save.lockedLog || []).filter(e => e.who === (characters.find(c => c.id === cid)?.name)).slice(-4);
+            const memoryHint = ownTalks.length ? `【你的私下记忆】（别人不知道你知道这些）\n${ownTalks.map(e => `${e.day} 你与${e.npc || "某人"}私下谈过：${e.text}`).join("\n")}\n这些记忆影响你的言行（欲言又止/改变态度/私下行动），但不要主动透露内容。` : undefined;
             const personaHint = declAgent?.persona ? `【你的模组内人设】（以此身份行动，覆盖角色卡的现代设定）\n时代：${declAgent.persona.era}\n身份：${declAgent.persona.occupation}——${declAgent.persona.background}\n性格不变的部分：${declAgent.persona.keepTraits}\n${declAgent.persona.changes ? `时代调整：${declAgent.persona.changes}\n` : ""}你的言行、物品、习惯都必须属于这个时代，不要出现时代外元素。` : undefined;
             const decl = await companionDeclare(cid, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, declAgent?.affinity, {
               ...(save.agentSecrets?.[cid] ? { secretHint: `【你的秘密】${save.agentSecrets[cid].content}（与真相的咬合点：${save.agentSecrets[cid].link}${save.agentSecrets[cid].informant ? `；${save.agentSecrets[cid].informant}知道更多——你可以私下找TA求证）` : "）"}\n这是只有你知道的事。平时言行可以露出破绽（欲言又止、回避话题、偷偷做小动作），但不要直接说破；何时摊牌由你决定。不要在宣言里向队友透露秘密内容，除非你决定此刻公开它。` } : {}),
               ...(personaHint ? { personaHint } : {}),
+              ...(memoryHint ? { memoryHint } : {}),
             });
 
             if (decl.failed) {
@@ -3515,6 +3522,16 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                   <div style={{ marginTop: 2 }}>主线 第{Math.min(save.mainQuestStage + 1, skeleton.mainQuest.stages.length)}/{skeleton.mainQuest.stages.length}阶段</div>
                 </div>
 
+                {/* My persona card (fork 十二期 — module-era identity) */}
+                {save.myPersona && (
+                  <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "var(--c-adv-choice-bg)", border: "1px solid var(--c-adv-accent-dim)" }}>
+                    <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", marginBottom: 4, fontFamily: "monospace", letterSpacing: "0.1em" }}>🎭 你的模组身份</div>
+                    <div style={{ fontSize: "calc(12px*var(--app-text-scale,1))", fontWeight: 600, color: "var(--c-adv-text)" }}>{save.myPersona.name} · {save.myPersona.occupation}</div>
+                    {save.myPersona.background && <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 4, lineHeight: 1.6 }}>{save.myPersona.background}</div>}
+                    {save.myPersona.hooks && <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 3, opacity: 0.75 }}>你私下在意：{save.myPersona.hooks}</div>}
+                  </div>
+                )}
+
                 {/* My secret card (fork 八期A — visible to user only, reveal timing is theirs) */}
                 {save.mySecret && (
                   <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "rgba(150,120,220,0.08)", border: "1px solid rgba(150,120,220,0.25)" }}>
@@ -4111,6 +4128,54 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             />
           )}
 
+        </div>
+      )}
+
+      {/* ═══ Player persona review (fork 十二期 — first entry, edit then confirm) ═══ */}
+      {personaReview && (
+        <div style={{ position: "absolute", inset: 0, zIndex: 78, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div style={{
+            width: "min(440px, 100%)", maxHeight: "84vh", overflowY: "auto",
+            background: "var(--c-adv-panel-bg)", borderRadius: 16, border: "1px solid var(--c-adv-accent-dim)",
+            boxShadow: "0 24px 64px rgba(0,0,0,0.6)", padding: "20px 18px",
+          }}>
+            <div style={{ fontSize: "calc(16px*var(--app-text-scale,1))", fontWeight: 700, color: "var(--c-adv-accent)", marginBottom: 4, letterSpacing: "0.05em" }}>🎭 你的模组内身份</div>
+            <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
+              角色卡已按模组时代适配。过目修改后确认——KP 将以此身份称呼与对待你
+            </div>
+            {([
+              { key: "name", label: "名字" },
+              { key: "occupation", label: "时代职业" },
+            ] as const).map(f => (
+              <div key={f.key} style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 4 }}>{f.label}</div>
+                <input value={personaReview[f.key]} onChange={e => setPersonaReview({ ...personaReview, [f.key]: e.target.value })}
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--c-adv-input-border)", background: "var(--c-adv-input-bg)", color: "var(--c-adv-body)", fontSize: "calc(12px*var(--app-text-scale,1))", fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+              </div>
+            ))}
+            {([
+              { key: "background", label: "身份背景（这个时代的身份与来此缘由）" },
+              { key: "keepTraits", label: "性格保持（不变的部分）" },
+              { key: "changes", label: "时代调整说明" },
+              { key: "hooks", label: "与本案的私人连接" },
+            ] as const).map(f => (
+              <div key={f.key} style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 4 }}>{f.label}</div>
+                <textarea value={personaReview[f.key]} onChange={e => setPersonaReview({ ...personaReview, [f.key]: e.target.value })}
+                  style={{ width: "100%", minHeight: 56, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--c-adv-input-border)", background: "var(--c-adv-input-bg)", color: "var(--c-adv-body)", fontSize: "calc(11px*var(--app-text-scale,1))", fontFamily: "inherit", lineHeight: 1.6, resize: "vertical", outline: "none", boxSizing: "border-box" }} />
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <button type="button" onClick={() => { setPersonaReview(null); persistSave({ ...save, myPersona: undefined }); }}
+                style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1px solid var(--c-adv-input-border)", background: "transparent", color: "var(--c-adv-text-dim)", fontSize: "calc(12px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit" }}>
+                不用模组身份
+              </button>
+              <button type="button" onClick={() => { persistSave({ ...save, myPersona: { ...personaReview, confirmed: true } }); setPersonaReview(null); pushMessages({ id: mkId(), type: "system", text: `🎭 你的身份已确认：${personaReview.occupation}` }); }}
+                style={{ flex: 1.6, padding: "11px 0", borderRadius: 10, border: "1px solid var(--c-adv-accent-dim)", background: "var(--c-adv-accent-dim)", color: "var(--c-adv-accent)", fontSize: "calc(12px*var(--app-text-scale,1))", fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                确认身份，开始调查
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

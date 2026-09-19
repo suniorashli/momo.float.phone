@@ -702,6 +702,8 @@ export type DMContext = {
   discoveredRegionIds?: string[];
   // Fork 十期: stage asset manifest (names only — images/audio never enter prompts)
   assetManifest?: string;
+  // Fork 十二期: player's module-era persona (KP narrates the player's era identity)
+  playerPersona?: string;
 };
 
 /** Truncate an array of strings from the oldest, keeping newest within token budget */
@@ -860,7 +862,7 @@ ${ctx.madness?.permanent ? `\n【疯狂状态】{{user}}已永久疯狂（SAN归
 地点：${ctx.currentLocation} · ${ctx.gameTime}${timeBlock}
 事件：${ctx.eventType} — ${ctx.eventBrief}
 ${ctx.npcName ? `NPC：${ctx.npcName}（${ctx.npcPersonality}）` : ""}
-队伍成员：{{user}}、${ctx.companionNames.join("、") || "无"}
+队伍成员：{{user}}、${ctx.companionNames.join("、") || "无"}${ctx.playerPersona ? `\n{{user}}的模组内身份：${ctx.playerPersona}（叙述中按此身份称呼与对待{{user}}）` : ""}
 （{{user}}是用户。所有输出里指代用户都必须写"{{user}}"，不要写"你"或"你们"；其余成员也用名字。不替任何成员说话。需要指代全队时写"队伍"或"众人"。）
 
 # 队伍状态
@@ -1121,7 +1123,7 @@ export async function companionDeclare(
   streamLog?: import("./map-types").StreamMessage[],
   overrideUserIdentity?: import("../components/settings/user-identity").UserIdentity | null,
   overrideAffinity?: number,
-  options?: { instruction?: string; secretHint?: string; personaHint?: string },
+  options?: { instruction?: string; secretHint?: string; personaHint?: string; memoryHint?: string },
 ): Promise<Declaration> {
   const allChars = loadCharacters();
   const character = allChars.find(c => c.id === characterId);
@@ -1181,7 +1183,7 @@ async function buildCompanionDeclarePromptPayload(
   streamLog?: import("./map-types").StreamMessage[],
   overrideUserIdentity?: import("../components/settings/user-identity").UserIdentity | null,
   overrideAffinity?: number,
-  options?: { instruction?: string; secretHint?: string; personaHint?: string },
+  options?: { instruction?: string; secretHint?: string; personaHint?: string; memoryHint?: string },
 ) {
   const allChars = loadCharacters();
   const character = allChars.find(c => c.id === characterId);
@@ -1229,6 +1231,10 @@ async function buildCompanionDeclarePromptPayload(
   // Fork 十一期: module-era persona overrides the raw card (时代职业/背景/性格保持)
   if (options?.personaHint?.trim()) {
     historyContentFinal = `${options.personaHint.trim()}\n\n${historyContentFinal}`;
+  }
+  // Fork 十二期: companion remembers their OWN private talks (others' stay hidden)
+  if (options?.memoryHint?.trim()) {
+    historyContentFinal = `${options.memoryHint.trim()}\n\n${historyContentFinal}`;
   }
   const history = [
     ...pastHistory,
