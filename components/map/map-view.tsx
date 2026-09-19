@@ -3019,7 +3019,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                         <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 14 }}>
                           {save.playerSheet.weapons.map((w, i) => (
                             <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 8px", borderRadius: 6, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)" }}>
-                              <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)" }}>{w.name} <span style={{ color: "var(--c-adv-text-muted)", fontSize: "calc(9px*var(--app-text-scale,1))">{w.range ? `· ${w.range}` : ""}{w.shots ? `· ${w.shots}发` : ""}</span></span>
+                              <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)" }}>{w.name} <span style={{ color: "var(--c-adv-text-muted)", fontSize: "calc(9px*var(--app-text-scale,1))" }}>{w.range ? `· ${w.range}` : ""}{w.shots ? `· ${w.shots}发` : ""}</span></span>
                               <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent)", fontFamily: "monospace" }}>
                                 {save.playerSheet!.skills[w.skill] ?? 25}% · {w.damage}
                               </span>
