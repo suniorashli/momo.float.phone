@@ -805,6 +805,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       const updatedDirector = { ...save.director };
 
       // Fork 九期B: act transition — when the act's final stage completes, load the next act
+      let nextCurrentAct: number | undefined;
       if (skeleton.acts && skeleton.acts.length > 0 && continuation.advanceMainQuest) {
         const actIdx = Math.min(save.currentAct ?? 0, skeleton.acts.length - 1);
         const act = skeleton.acts[actIdx];
@@ -815,7 +816,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         if (nextAct && inActStage) {
           pushMessages({ id: mkId(), type: "system", text: `🎭 第${actIdx + 1}幕「${act?.title || ""}」落幕——新的一幕开始了` });
           pushMessages({ id: mkId(), type: "narration", text: `【幕间】${nextAct.title ? `第${actIdx + 2}幕「${nextAct.title}」的帷幕拉开。` : ""}前事的余波尚未散尽，新的疑问已经浮现。调查仍在继续。` });
-          newSave.currentAct = actIdx + 1;
+          nextCurrentAct = actIdx + 1;
         }
       }
       if (continuation.advanceMainQuest && activeEventMeta?.type === "main_quest") {
@@ -1017,6 +1018,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
       const newSave: GameSave = {
         ...save,
+        ...(nextCurrentAct !== undefined ? { currentAct: nextCurrentAct } : {}),
         currentNodeId: newNodeId,
         currentNodeType: newNodeType,
         hp: newHp,
@@ -1548,6 +1550,26 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     handlePlayerAction(choice.label, true);
   }, [handlePlayerAction, save, characters, userIdentity, pushMessages, persistSave, is7th, diceMode]);
 
+  // Fork 八期B: player-initiated private talk — visible to the user only, archived to lockedLog
+  // (declared BEFORE handleFreeInput — its deps array must not touch a TDZ binding)
+  const submitPrivateTalk = useCallback(() => {
+    const speech = freeText.trim();
+    const action = freeAction.trim();
+    if (!speech && !action) return;
+    const playerName = userIdentity?.name || "你";
+    const npcName = privateTalkNpc || "";
+    const content = [speech, action].filter(Boolean).join(" / ");
+    const dayLabel = formatGameTime(save.gameDay, save.gameTime);
+    const entry = { id: `lock_${Date.now()}`, who: playerName, npc: npcName || undefined, text: content, day: dayLabel };
+    lockedLogRef.current = [...lockedLogRef.current, entry];
+    persistSave({ ...save, lockedLog: [...(save.lockedLog || []), entry] });
+    pushMessages({ id: mkId(), type: "narration", text: `🔒〔你私下${npcName ? `对${npcName}` : ""}低语〕${content}`, audience: ["locked"] });
+    setFreeText("");
+    setFreeAction("");
+    setPrivateTalk(false);
+    setPrivateTalkNpc("");
+  }, [freeText, freeAction, privateTalkNpc, save, userIdentity, persistSave, pushMessages]);
+
   // ── Handle free text input ──
   const handleFreeInput = useCallback(() => {
     if ((!freeText.trim() && !freeAction.trim()) || eventContinueLoading || eventLoading) return;
@@ -1587,24 +1609,6 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   }, [freeMode, freeText, freeAction, userIdentity, pushMessages, handleFreeInput]);
 
   // Fork: player declares with an explicitly chosen skill check (CoC loop)
-  // Fork 八期B: player-initiated private talk — visible to the user only, archived to lockedLog
-  const submitPrivateTalk = useCallback(() => {
-    const speech = freeText.trim();
-    const action = freeAction.trim();
-    if (!speech && !action) return;
-    const playerName = userIdentity?.name || "你";
-    const npcName = privateTalkNpc || "";
-    const content = [speech, action].filter(Boolean).join(" / ");
-    const dayLabel = formatGameTime(save.gameDay, save.gameTime);
-    const entry = { id: `lock_${Date.now()}`, who: playerName, npc: npcName || undefined, text: content, day: dayLabel };
-    lockedLogRef.current = [...lockedLogRef.current, entry];
-    persistSave({ ...save, lockedLog: [...(save.lockedLog || []), entry] });
-    pushMessages({ id: mkId(), type: "narration", text: `🔒〔你私下${npcName ? `对${npcName}` : ""}低语〕${content}`, audience: ["locked"] });
-    setFreeText("");
-    setFreeAction("");
-    setPrivateTalk(false);
-    setPrivateTalkNpc("");
-  }, [freeText, freeAction, privateTalkNpc, activeEventMeta, save, userIdentity, persistSave, pushMessages]);
 
   const submitDeclarationWithCheck = useCallback(() => {
     const skill = checkSkill.trim();
