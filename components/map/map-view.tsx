@@ -483,6 +483,9 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           ...(save.mySecret ? [{ who: userIdentity?.name || "你", secret: save.mySecret }] : []),
           ...Object.entries(save.agentSecrets || {}).map(([cid, s]) => ({ who: charName(cid), secret: s })),
         ],
+        acts: skeleton.acts,
+        currentAct: save.currentAct ?? 0,
+        discoveredRegionIds: [...discoveredRegions].map(idx => skeleton.mapInput.regions[idx]?.id).filter(Boolean) as string[],
         partyStatus: {
           hp: save.hp,
           maxHp: save.maxHp,
@@ -734,6 +737,20 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       if (ev.worldEvents?.length) setWorldEvents(ev.worldEvents);
       const updatedDirector = { ...save.director };
 
+      // Fork 九期B: act transition — when the act's final stage completes, load the next act
+      if (skeleton.acts && skeleton.acts.length > 0 && continuation.advanceMainQuest) {
+        const actIdx = Math.min(save.currentAct ?? 0, skeleton.acts.length - 1);
+        const act = skeleton.acts[actIdx];
+        const nextAct = skeleton.acts[actIdx + 1];
+        // Simple mapping: main quest stage count within an act = total stages / acts
+        const stagesPerAct = Math.max(1, Math.ceil(skeleton.mainQuest.stages.length / skeleton.acts.length));
+        const inActStage = (save.mainQuestStage + 1) % stagesPerAct === 0;
+        if (nextAct && inActStage) {
+          pushMessages({ id: mkId(), type: "system", text: `🎭 第${actIdx + 1}幕「${act?.title || ""}」落幕——新的一幕开始了` });
+          pushMessages({ id: mkId(), type: "narration", text: `【幕间】${nextAct.title ? `第${actIdx + 2}幕「${nextAct.title}」的帷幕拉开。` : ""}前事的余波尚未散尽，新的疑问已经浮现。调查仍在继续。` });
+          newSave.currentAct = actIdx + 1;
+        }
+      }
       if (continuation.advanceMainQuest && activeEventMeta?.type === "main_quest") {
         updatedDirector.mainArc = {
           ...updatedDirector.mainArc,

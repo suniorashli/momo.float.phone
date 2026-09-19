@@ -2,7 +2,7 @@
 // RPG Map Mode — LLM integration for world generation + event expansion
 // Fork mods: CoC/CoJ-style TRPG mode (CoC 6th Ed. attributes, module import, sparse NPC worlds)
 
-import type { WorldSkeleton, WorldSkeletonInput, EventScene, GameSave, WorldNPC, QuestLine, EncounterSeed, CharacterAgent, AgentDecision, RichRegion, Declaration, CharStats, RulesEdition, PersonalSecret } from "./map-types";
+import type { WorldSkeleton, WorldSkeletonInput, EventScene, GameSave, WorldNPC, QuestLine, EncounterSeed, CharacterAgent, AgentDecision, RichRegion, Declaration, CharStats, RulesEdition, PersonalSecret, ModuleAct } from "./map-types";
 import { STAT_LABELS, ALL_STATS, SKILL_STAT_HINT } from "./map-types";
 import { simpleLLMCall } from "./api-helpers";
 import { previewMessagesForApi, sendLLMRequest } from "./chat-engine";
@@ -687,6 +687,11 @@ export type DMContext = {
   partySecrets?: { who: string; secret: PersonalSecret }[];
   // Fork 八期B: locked private-talk log (for ending branch adjudication; formatted strings)
   lockedLogSummary?: string[];
+  // Fork 九期B: staged acts — current act + unlocked acts (later acts' truth NEVER enters the prompt)
+  acts?: ModuleAct[];
+  currentAct?: number;
+  // Fork 九期B: discovered region ids (for map slimming; undefined = full map, legacy)
+  discoveredRegionIds?: string[];
 };
 
 /** Truncate an array of strings from the oldest, keeping newest within token budget */
@@ -707,11 +712,22 @@ function buildDMUserMsg(ctx: DMContext): string {
   const mqNodeMap = ctx.mainQuestNodeMap || {};
   const tokenConfig = loadDMTokenConfig();
 
-  // Build map section: region → nodes with content
+  // Fork 九期B: map slimming — only regions the party has discovered (current + neighbors) enter the prompt
+  const discoveredRegions = new Set<string>();
+  if (ctx.richRegions && ctx.discoveredRegionIds && ctx.discoveredRegionIds.length > 0) {
+    for (const r of ctx.richRegions) {
+      if (ctx.discoveredRegionIds.includes(r.id)) {
+        discoveredRegions.add(r.id);
+        for (const adj of r.adjacent_to) discoveredRegions.add(adj);
+      }
+    }
+  }
+  // Build map section: region → nodes with content (slimmed when discovery info present)
   let mapBlock = "";
   if (ctx.richRegions) {
     const lines: string[] = [];
     for (const r of ctx.richRegions) {
+      if (discoveredRegions.size > 0 && !discoveredRegions.has(r.id)) continue;
       lines.push(`\n## ${r.l1_name_cn}（${r.geography}）`);
       // L1 content
       const l1Parts: string[] = [];
@@ -775,6 +791,17 @@ NPC秘密：${Object.entries(dm.npcSecrets).map(([k, v]) => `${k}→${v}`).join(
 已埋伏笔：${dir.plantedClues.join("、") || "无"}` : "";
 
   // Main quest stages
+  // Fork 九期B: staged acts — inject ONLY current & prior acts (later acts are sealed)
+  const actsBlock = ctx.acts && ctx.acts.length > 0 ? (() => {
+    const cur = typeof ctx.currentAct === "number" ? Math.min(ctx.currentAct, ctx.acts.length - 1) : 0;
+    const open = ctx.acts.slice(0, cur + 1).map(a => `第${a.index + 1}幕「${a.title}」：${a.summary}${a.nodes.length ? `（地点：${a.nodes.join("、")}）` : ""}`).join("\n");
+    return `\n[分幕剧情·严格按幕推进]
+当前：第${cur + 1}幕「${ctx.acts[cur]?.title || "?"}」（共${ctx.acts.length}幕，后续幕的剧情你尚不知晓，绝不提前演出后续幕内容）
+已解锁的幕：
+${open}
+【转幕规则】本幕终局的 advance=true 时系统加载下一幕；你可以在本幕内口胡演出（NPC谎言、误导、临时事件），但不得提前揭示后续幕的真相、地点或怪物。未到场的剧情用「现在还去不了/人不在/门锁着」挡住`;
+  })() : "";
+
   const questBlock = ctx.mainQuestSynopsis ? `\n[主线「${ctx.mainQuestSynopsis}」]
 ${(ctx.mainQuestStages || []).map((s, i) => {
     const marker = s.result ? "✅" : (dir && i === dir.mainArc.currentStage ? "←当前" : "");
@@ -806,7 +833,7 @@ ${(ctx.mainQuestStages || []).map((s, i) => {
 
   return `# 世界：${ctx.worldLore}
 ${ctx.kpStyle ? `\n【叙述风格指令】（KP必须遵守）\n${ctx.kpStyle}\n` : ""}${mapBlock}
-${dmBlock}${dirBlock}${questBlock}${pacingHint}
+${dmBlock}${dirBlock}${actsBlock}${questBlock}${pacingHint}
 
 ${ctx.combat ? `\n# 战斗轮
 第${ctx.combat.round}轮 · 先攻顺序：${ctx.combat.initiative.join(" → ")}

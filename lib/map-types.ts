@@ -279,6 +279,8 @@ export type GameSave = {
   mySecret?: PersonalSecret;                     // 用户的秘密（工具栏可见，摊牌时机由用户决定）
   agentSecrets?: Record<string, PersonalSecret>; // characterId → 同伴的秘密（KP 可见；用户结局前不可见，幕后页揭晓）
   lockedLog?: { id: string; who: string; npc?: string; text: string; day: string }[]; // 锁档私聊流（结局揭晓；八期B 填充）
+  // ── fork 九期B: staged acts ──
+  currentAct?: number;             // 当前幕索引（skeleton.acts[currentAct]）
 };
 
 // ── MapWorld (stored in IndexedDB) — world is independent of characters ──
