@@ -57,6 +57,9 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   const [currentChoices, setCurrentChoices] = useState<EventChoice[] | null>(save.pendingEvent?.choices || null);
   const [freeText, setFreeText] = useState("");
   const [freeAction, setFreeAction] = useState("");
+  // Fork: player-chosen check skill for the current declaration
+  const [checkSkill, setCheckSkill] = useState("");
+  const [currentHints, setCurrentHints] = useState<{ label: string; skillHint?: string }[] | null>(save.pendingEvent?.hints || null);
   const [diceOverlay, setDiceOverlay] = useState<{ name: string; stat: string; statValue: number; context: string; label: string; isPlayer: boolean } | null>(null);
   const [diceRolling, setDiceRolling] = useState(false);
   const [diceNumber, setDiceNumber] = useState(0);
@@ -514,9 +517,17 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       setEventContext(JSON.stringify(dmCtx));
       setInEvent(true);
 
+      // Fork: investigation hints from KP (scene stays open for player declarations)
+      const sceneHints = (scene as EventScene & { hints?: { label: string; skillHint?: string }[] }).hints;
+      setCurrentHints(sceneHints && sceneHints.length > 0 ? sceneHints : null);
+
       // Set choices if available
       if (scene.choices && scene.choices.length > 0) {
         setCurrentChoices(scene.choices);
+        setTimeout(() => inputRef.current?.focus(), 200);
+      } else if (sceneHints && sceneHints.length > 0) {
+        // No hard choices but hints exist — stay in event for player-driven investigation
+        setCurrentChoices([]);
         setTimeout(() => inputRef.current?.focus(), 200);
       } else {
         // No choices — event done immediately
@@ -609,11 +620,21 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             setCompletedCompanions(completedCompanionsRef.current);
 
             companionDecls.push(decl);
-            // CoC6 combat: companion attack actions auto-resolve weapon dice
+            // Fork: companion-chosen skill check — roll it here, result enters the stream before DM resolve
             const declAgent = save.agents.find(a => {
               const ch = characters.find(c => c.id === a.characterId);
               return ch?.name === decl.speaker;
             });
+            if (decl.skillCheck && declAgent) {
+              const edition2 = is7th ? "coc7" as const : "coc6" as const;
+              const check = skillCheckValue(declAgent.sheet, decl.skillCheck, declAgent.stats, edition2);
+              const rollR = rollD100(check.value);
+              const rLabel = rollR.level === "crit" ? "大成功" : rollR.level === "hard" ? "困难成功" : rollR.level === "success" ? "成功" : rollR.level === "fumble" ? "大失败" : "失败";
+              const declRollMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${decl.speaker} · ${decl.action}（${check.source} ${check.value}）`, text: `D100 = ${rollR.roll} → ${rLabel}`, emotion: rollR.level === "success" || rollR.level === "hard" || rollR.level === "crit" ? "success" : "fail" };
+              pushMessages(declRollMsg);
+              streamRef.current = [...streamRef.current, declRollMsg];
+              usedSkillsRef.current.add(check.source.replace(/\(.*\)$/, ""));
+            }
             if (declAgent?.sheet) {
               const weapon = findWeaponMention(`${decl.action} ${decl.speech}`, declAgent.sheet.weapons);
               if (weapon) {
@@ -1293,25 +1314,12 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       // Only one person, no need to pick
       chosen = candidates[0];
     } else {
-      // Random pick with animated picker
-      chosen = candidates[Math.floor(Math.random() * candidates.length)];
-      const names = candidates.map(c => c.name);
-      await new Promise<void>(resolve => {
-        let idx = 0;
-        setPickerOverlay({ candidates: names, current: names[0], chosen: chosen.name, settled: false });
-        const interval = setInterval(() => {
-          idx = (idx + 1) % names.length;
-          setPickerOverlay(prev => prev ? { ...prev, current: names[idx] } : null);
-        }, 120);
-        setTimeout(() => {
-          clearInterval(interval);
-          setPickerOverlay(prev => prev ? { ...prev, current: chosen.name, settled: true } : null);
-          const rpMsg: StreamMessage = { id: mkId(), type: "system", text: `🎲 本轮由 ${chosen.name} 掷骰` };
-          pushMessages(rpMsg);
-          streamRef.current = [...streamRef.current, rpMsg];
-          setTimeout(() => { setPickerOverlay(null); resolve(); }, 1000);
-        }, 1200);
-      });
+      // Fork: CoC loop — the player's own check rolls themselves (who omitted = the player who declared).
+      // Random pick animation removed: everyone declares & rolls their own checks now.
+      chosen = candidates[0]; // player
+      const rpMsg: StreamMessage = { id: mkId(), type: "system", text: `🎲 本次检定由 ${chosen.name} 掷骰（同伴的检定由他们自己宣言时掷）` };
+      pushMessages(rpMsg);
+      streamRef.current = [...streamRef.current, rpMsg];
     }
 
     // Record skill usage for growth roll (strip conversion suffix like 侦查(智力))
@@ -1390,6 +1398,50 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       handleFreeInput();
     }
   }, [freeMode, freeText, freeAction, userIdentity, pushMessages, handleFreeInput]);
+
+  // Fork: player declares with an explicitly chosen skill check (CoC loop)
+  const submitDeclarationWithCheck = useCallback(() => {
+    const skill = checkSkill.trim();
+    const speech = freeText.trim();
+    const action = freeAction.trim();
+    if (!speech && !action && !skill) return;
+    // Build declaration text; skill check runs first (player rolls), then the action goes into the round
+    const combined = [
+      speech ? `说：「${speech}」` : "",
+      action ? `做：${action}${skill ? `（检定：${skill}）` : ""}` : "",
+    ].filter(Boolean).join("\n");
+    setFreeText("");
+    setFreeAction("");
+    setCheckSkill("");
+    if (skill) {
+      // Roll the player's chosen skill immediately, then continue as a declaration
+      const edition = is7th ? "coc7" as const : "coc6" as const;
+      const check = skillCheckValue(save.playerSheet, skill, save.playerStats, edition);
+      const r = rollD100(check.value);
+      const rLabel = r.level === "crit" ? "大成功" : r.level === "hard" ? "困难成功" : r.level === "success" ? "成功" : r.level === "fumble" ? "大失败" : "失败";
+      const success = r.level !== "fail" && r.level !== "fumble";
+      const rollMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${userIdentity?.name || "你"} · ${action || speech}（${check.source} ${check.value}）`, text: `D100 = ${r.roll} → ${rLabel}`, emotion: success ? "success" : "fail" };
+      pushMessages(rollMsg);
+      streamRef.current = [...streamRef.current, rollMsg];
+      usedSkillsRef.current.add(check.source.replace(/\(.*\)$/, ""));
+      persistSave({ ...save, checkedSkills: [...new Set([...(save.checkedSkills || []), check.source.replace(/\(.*\)$/, "")])] });
+      // 7th luck spend on player-chosen checks
+      if (is7th && !success && r.level === "fail") {
+        const luck = save.playerStats.lck ?? 0;
+        const luckInfo = canSpendLuck(r.roll, check.value, luck);
+        if (luckInfo.ok && luckInfo.cost > 0 && window.confirm(`差一点！花费 ${luckInfo.cost} 点幸运（当前 ${luck}）补成成功？`)) {
+          const newStats = { ...save.playerStats, lck: luck - luckInfo.cost };
+          persistSave({ ...save, playerStats: newStats });
+          const luckMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${userIdentity?.name || "你"} · 消耗幸运`, text: `花费幸运 ${luckInfo.cost} 点：D100 ${r.roll} → 补成成功（幸运剩余 ${newStats.lck}）`, emotion: "success" };
+          pushMessages(luckMsg);
+          streamRef.current = [...streamRef.current, luckMsg];
+          handlePlayerAction(`【幸运补值成功】${combined}`, true);
+          return;
+        }
+      }
+    }
+    handlePlayerAction(combined, !skill);
+  }, [checkSkill, freeText, freeAction, save, is7th, pushMessages, persistSave, handlePlayerAction, userIdentity]);
 
   const handleToggleFreeMode = useCallback(() => {
     if (freeMode) {
@@ -2075,6 +2127,47 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           {/* ── Input area (hidden during loading) ── */}
           {!eventLoading && !eventContinueLoading && <div style={{ display: "grid", gridTemplateColumns: "1fr 48px", gap: 6 }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
+              {/* Fork: KP investigation hints (tappable → fills check skill) */}
+              {inEvent && currentHints && currentHints.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "5px 0" }}>
+                  <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", fontFamily: "monospace", letterSpacing: "0.1em", lineHeight: "24px" }}>💡</span>
+                  {currentHints.map((h, i) => (
+                    <button key={i} type="button"
+                      onClick={() => {
+                        setFreeAction(h.label);
+                        if (h.skillHint) setCheckSkill(h.skillHint);
+                      }}
+                      style={{
+                        padding: "3px 9px", borderRadius: 12,
+                        border: "1px solid var(--c-adv-choice-border)", background: "var(--c-adv-choice-bg)",
+                        color: "var(--c-adv-text-dim)", fontSize: "calc(10px*var(--app-text-scale,1))",
+                        cursor: "pointer", fontFamily: "inherit",
+                        display: "flex", alignItems: "center", gap: 4,
+                      }}>
+                      {h.label}
+                      {h.skillHint && <span style={{ color: "var(--c-adv-accent-dim)", fontSize: "calc(9px*var(--app-text-scale,1))" }}>🎲{h.skillHint}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {/* Check skill input (CoC loop: player chooses what to roll) */}
+              <div style={{ display: "flex", gap: 6 }}>
+                <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", lineHeight: "32px", flexShrink: 0, width: 20, textAlign: "center" }}>🎲</span>
+                <input
+                  value={checkSkill}
+                  onChange={e => setCheckSkill(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && !freeMode) submitDeclarationWithCheck(); }}
+                  placeholder="检定技能（如 侦查 / 心理学 / 手枪，留空则不检定）"
+                  disabled={eventContinueLoading || eventLoading || freeModeReplying || freeMode}
+                  style={{
+                    flex: 1, minWidth: 0, padding: "7px 10px", borderRadius: 8,
+                    border: `1px solid ${checkSkill ? "rgba(200,160,100,0.35)" : "var(--c-adv-input-border)"}`,
+                    background: "var(--c-adv-input-bg)",
+                    color: checkSkill ? "var(--c-adv-accent)" : "var(--c-adv-body)",
+                    fontSize: "calc(13px*var(--app-text-scale,1))", fontFamily: "inherit", outline: "none",
+                  }}
+                />
+              </div>
               {/* Speech input */}
               <div style={{ display: "flex", gap: 6 }}>
                 <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", lineHeight: "32px", flexShrink: 0, width: 20, textAlign: "center" }}>💬</span>
@@ -2122,16 +2215,16 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             <button
               type="button"
               aria-label="发送行动"
-              onClick={submitFreeInput}
-              disabled={(!freeText.trim() && !freeAction.trim()) || eventContinueLoading || eventLoading || freeModeReplying}
+              onClick={() => { if (!freeMode && checkSkill.trim()) submitDeclarationWithCheck(); else submitFreeInput(); }}
+              disabled={(!freeText.trim() && !freeAction.trim() && !checkSkill.trim()) || eventContinueLoading || eventLoading || freeModeReplying}
               style={{
                 width: 48,
                 minHeight: 69,
                 borderRadius: 9,
                 border: "none",
-                background: (freeText.trim() || freeAction.trim()) ? "var(--c-adv-accent-dim)" : "var(--c-adv-input-bg)",
-                color: (freeText.trim() || freeAction.trim()) ? "var(--c-adv-accent)" : "var(--c-adv-text-muted)",
-                cursor: (freeText.trim() || freeAction.trim()) && !freeModeReplying ? "pointer" : "default",
+                background: (freeText.trim() || freeAction.trim() || checkSkill.trim()) ? "var(--c-adv-accent-dim)" : "var(--c-adv-input-bg)",
+                color: (freeText.trim() || freeAction.trim() || checkSkill.trim()) ? "var(--c-adv-accent)" : "var(--c-adv-text-muted)",
+                cursor: (freeText.trim() || freeAction.trim() || checkSkill.trim()) && !freeModeReplying ? "pointer" : "default",
                 flexShrink: 0,
                 display: "grid",
                 placeItems: "center",

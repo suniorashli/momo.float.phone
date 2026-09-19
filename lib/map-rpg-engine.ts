@@ -528,7 +528,12 @@ export async function generateWorldSkeleton(
 
 export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。你控制旁白和NPC，不替调查员（队伍成员）说话。平等对待所有成员，用名字称呼他们。
 
-职责：描述场景、扮演NPC、推进调查、埋伏笔、给玩家选项。这是克苏鲁神话跑团：恐怖与未知是主旋律，战斗是最后的手段，理智比生命更脆弱。
+职责与流程（真正的跑团桌面流程）：
+- 你的职责是报模组信息：这里有什么（环境、物品、痕迹）、NPC有谁、NPC说了什么做了什么、氛围如何
+- 你可以给【暗示】（hints数组）：提示这里可能值得做什么检定（如"翻找书桌的文件""观察对方说谎的迹象"），但绝不替调查员决定行动
+- 行动权完全在调查员手中：他们宣言做什么、用什么检定，由系统掷骰后你再演结果
+- 若调查员宣言的行动在这个场景不合理（比如对没有机关的墙用锁匠），不要拒绝，而是裁定"似乎没有什么效果"——除非大成功，可以强行取得一点意外成果（发现别的线索之类）
+- 这是克苏鲁神话跑团：恐怖与未知是主旋律，战斗是最后的手段，理智比生命更脆弱。
 
 【人称规则·重要】
 - 用户也是队伍成员之一，必须用 {{user}} 称呼用户，不要用"你"或"你们"指代用户。
@@ -545,6 +550,7 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 - 每个场景至少做一件推进剧情的事：给一条线索/引导玩家去下一个关键地点/让NPC暗示某个伏笔/揭示一个秘密
 - 选项设计要引导剧情前进：至少一个选项与主线相关，让玩家有理由去探索下一个关键地点
 - 不要让玩家在同一个地方原地转圈——如果当前地点的调查已经完成，暗示他们该去哪里
+【选项纪律·核心】choices 数组通常留空 [] 或至多 1-2 个明显是"移动/离开"类选项；调查行动不要做成选项——那是调查员自己宣言的事。你的引导职责全部由 hints 承担
 - advance=true表示当前主线阶段完成，请在关键剧情节点（获得关键线索/揭示重大真相/逃出险境）时设为true
 
 【COC氛围与判定】
@@ -574,13 +580,14 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
-{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动，像是在提醒来客这里并不太平。\\n\\n柜台后的老板抬起头，看了队伍一眼。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"角色们看到的（传给角色AI）","choices":[{"label":"小心地搜索房间","stat_check":{"stat":"侦查"}},{"label":"{{user}}不动声色地套话","stat_check":{"stat":"心理学","who":"{{user}}"}},{"label":"用钥匙开门","requires":"古老钥匙"},{"label":"直接离开"}],"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品或SAN-5"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
+{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动，像是在提醒来客这里并不太平。\\n\\n柜台后的老板抬起头，看了队伍一眼。柜台上摆着一盏油灯和一本翻开的住宿登记簿。","npc_lines":[{"speaker":"老板","text":"「这么晚才来？就剩两间房了。」他打量着来客，手指无意识地敲着登记簿。"}],"situation":"角色们看到的（传给角色AI）","choices":[],"hints":[{"label":"翻看住宿登记簿","skillHint":"图书馆使用"},{"label":"观察老板的神色","skillHint":"心理学"},{"label":"留意屋外的动静","skillHint":"聆听"}],"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品或SAN-5"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
 
 export type DMSceneResult = {
   narration: string;
   npcLines: { speaker: string; text: string }[];
   situation: string;
   choices: { label: string; statCheck?: { stat: string; who?: string }; requires?: string }[];
+  hints?: { label: string; skillHint?: string }[];
   journal: string;
   gained: string[];
   lost: string[];
@@ -822,6 +829,10 @@ export async function dmScene(ctx: DMContext, apiConfig: ApiConfig): Promise<DMS
     moveTo: p.move_to ?? p.moveTo ?? "",
     worldEvents: (p.world_events || p.worldEvents || []).map((event: string) => String(event || "")),
     ending: p.ending || false,
+    hints: (p.hints || []).map((h: Record<string, unknown>) => ({
+      label: String(h.label || ""),
+      skillHint: h.skillHint ? String(h.skillHint) : (h.skill_hint ? String(h.skill_hint) : undefined),
+    })).filter((h: { label: string }) => h.label),
   };
 }
 
@@ -927,6 +938,7 @@ export async function expandEvent(
       ...(c.statCheck ? { statCheck: { stat: c.statCheck.stat as import("./map-types").StatKey, ...(c.statCheck.who ? { who: c.statCheck.who as string } : {}) } } : {}),
       ...(c.requires ? { requires: c.requires } : {}),
     })),
+    hints: dm.hints,
     affinityDelta: {},
     journalEntry: dm.journal,
     unlocks: [],
@@ -1012,6 +1024,7 @@ export async function companionDeclare(
         speech: p.speech || p.text || "……",
         action: p.action || "跟随队伍",
         emotion: p.emotion || "neutral",
+        skillCheck: p.skill_check || p.skillCheck || undefined,
         affinityDelta: typeof p.affinity === "number" ? Math.max(-3, Math.min(3, Math.round(p.affinity))) : 0,
       };
     } catch {
@@ -1070,7 +1083,11 @@ async function buildCompanionDeclarePromptPayload(
   }));
 
   const historyContent = renderUserNameMacro(
-    options?.instruction?.trim() || `现在轮到你了。你会怎么说、怎么做？`,
+    options?.instruction?.trim() || `现在轮到你了。按照跑团流程宣言你这一轮的行动：
+1) 说：你想说的话（对队友/NPC/自言自语；也可以不说话）
+2) 做：你的行动宣言（调查、搜索、攀爬、攻击、跟随、原地观察……任选；也可以只是听和想，不行动）
+3) 如果你的行动需要检定，在skill_check字段写你用的技能名（侦查/聆听/图书馆使用/心理学/潜行/手枪/急救等，或属性名如意志/幸运）；不需要检定就留空
+4) 想清楚你为什么这么做——按你的人设和当前处境行动，不要人云亦云`,
     userIdentity?.name,
   );
   const history = [
@@ -1133,6 +1150,7 @@ export async function previewAdventureCompanionPromptPayload(
 export const DEFAULT_DM_RESOLVE_PROMPT = `你是COC跑团的守秘人（KP）。这是裁定阶段——所有调查员已宣言本轮行动。平等对待所有成员，所有成员都用名字称呼。
 
 你需要：
+0. 掷骰结果已由系统在对话流中给出（每人宣言自己的检定，各自掷各自的）——你只负责按已掷出的结果演结果，不要虚构新的掷骰或重掷
 1. 根据每个人的宣言描述结果（成功/失败/意外后果）
 2. NPC对所有角色的回应（有人说话了就要回应）
 3. 角色之间的互动呼应

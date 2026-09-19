@@ -314,7 +314,7 @@ export type AgentDecision = {
 // ── Event Scene (LLM-expanded dialogue) ──
 export type EventChoice = {
   label: string;
-  statCheck?: { stat: StatKey; who?: string };  // who: "你"/角色名 = 指定掷骰人; 省略 = 随机
+  statCheck?: { stat: StatKey; who?: string };  // who: "你"/角色名/best = 指定掷骰人; 省略 = 玩家自己掷
   requires?: string;           // item name required (e.g. "古老钥匙")
   consequence?: string;        // brief hint for journal
 };
@@ -329,6 +329,7 @@ export type EventScene = {
   background?: string;         // scene description (for atmosphere)
   dialogues: EventDialogue[];
   choices?: EventChoice[];
+  hints?: { label: string; skillHint?: string }[];  // fork: investigation prompts (CoC loop — player decides actions)
   affinityDelta?: Record<string, number>;  // character affinity changes
   journalEntry?: string;       // auto-added to journal
   unlocks?: string[];          // node IDs to unlock/discover
@@ -350,6 +351,7 @@ export type Declaration = {
   speaker: string;    // display name
   speech: string;     // what they say (to player/NPC/companion)
   action: string;     // what they do (physical action description)
+  skillCheck?: string;  // fork: companion-chosen skill for this action (rolled by system)
   emotion?: string;   // for display
   affinityDelta?: number;  // -3 to +3, how the character's affinity toward user changed
   failed?: boolean;        // true if LLM call failed (not a deliberate silence)
