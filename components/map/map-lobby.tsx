@@ -80,6 +80,8 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   const [moduleText, setModuleText] = useState("");
   const [moduleName, setModuleName] = useState("");
   const [moduleLoading, setModuleLoading] = useState(false);
+  // Fork: advanced options collapsed by default — description/module is all most users need
+  const [showAdvanced, setShowAdvanced] = useState(false);
   // Fork 九期: sectioned import (NPC/truth/acts) + review + code-only assembly
   const [secNpcText, setSecNpcText] = useState("");
   const [secTruthText, setSecTruthText] = useState("");
@@ -557,6 +559,16 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
             {/* ── Divider ── */}
             <div style={{ height: 1, background: "linear-gradient(90deg, transparent, rgba(200,160,100,0.15), transparent)", margin: "2px 0 14px" }} />
 
+            {/* ── Advanced options (collapsed by default) ── */}
+            <button type="button" onClick={() => setShowAdvanced(!showAdvanced)} style={{
+              width: "100%", padding: "9px 0", marginBottom: 14, borderRadius: 8,
+              border: "1px dashed rgba(200,160,100,0.25)", background: "transparent",
+              color: "rgba(200,160,100,0.55)", fontSize: "calc(11px*var(--app-text-scale,1))",
+              cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em",
+            }}>
+              {showAdvanced ? "▲ 收起高级选项" : `▼ 高级选项（不知道怎么开始再展开，不展开也能直接创建）${moduleText.trim() ? " · 📄 模组已装" : ""}`}
+            </button>
+            {showAdvanced && (<>
             {/* ── Tag sections ── */}
             {([
               { label: "风格基调", value: tone, setter: setTone, tags: ["轻松", "黑暗", "恐怖", "浪漫", "悬疑", "幽默", "治愈", "热血", "荒诞", "日常怪谈"] },
@@ -666,6 +678,8 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                 </div>
               </div>
             </div>
+            </>)}
+            {/* ── End advanced options (style & tone) ── */}
 
             {/* ── Divider ── */}
             <div style={{ height: 1, background: "linear-gradient(90deg, transparent, rgba(200,160,100,0.15), transparent)", margin: "2px 0 14px" }} />
@@ -911,6 +925,8 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                 </div>
               )}
             </div>
+            </>)}
+            {/* ── End advanced options ── */}
 
             {/* ── Divider ── */}
             <div style={{ height: 1, background: "linear-gradient(90deg, transparent, rgba(200,160,100,0.15), transparent)", margin: "2px 0 14px" }} />

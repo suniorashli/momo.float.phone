@@ -13,7 +13,7 @@ import { ADVENTURE_THEMES } from "./map-text-stream";
 import { loadCharacters } from "@/lib/character-storage";
 import { loadApiConfigs, loadBindingConfig, resolveBinding, resolveUserIdentity, resolveAuxiliaryApiConfig } from "@/lib/settings-storage";
 import { expandEvent, companionDeclare, resolveRound, rollD100, resolveCheckStat, ROLL_LABELS, formatGameTime, advanceTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
-import { skillCheckValue, resolveAttack, rollExpr, dbFromStats, findWeaponMention, LEVEL_LABEL, sanityLossVerdict, rollTemporaryMadness, buildInitiative, makeHostile, canSpendLuck, rollD100WithDice, type RollLevel, type HostileCombatant } from "@/lib/coc-sheet";
+import { skillCheckValue, resolveAttack, rollExpr, dbFromStats, findWeaponMention, LEVEL_LABEL, sanityLossVerdict, rollTemporaryMadness, buildInitiative, makeHostile, canSpendLuck, rollD100WithDice, SKILL_BASE_6, SKILL_BASE_7, type RollLevel, type HostileCombatant } from "@/lib/coc-sheet";
 import { STAT_LABELS, ALL_STATS, type StageAsset } from "@/lib/map-types";
 import { getAssetUrl, buildAssetManifest, registerAssetFiles, deleteAssetBlob } from "@/lib/stage-assets";
 import { importInvestigator } from "@/lib/investigator-import";
@@ -65,6 +65,10 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   // Fork 八期B: private-talk toggle — when on, the declaration goes through the locked pipeline
   const [privateTalk, setPrivateTalk] = useState(false);
   const [privateTalkNpc, setPrivateTalkNpc] = useState("");
+  // Fork: bottom-left ➕ menu (combat / skill check / private talk / dice mode)
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+  // Fork: skill-picker sheet (full skill list from the player's sheet — no more typos)
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   // Fork 十二期: player persona review modal (first world entry)
   const [personaReview, setPersonaReview] = useState<GameSave["myPersona"]>(save.myPersona && !save.myPersona.confirmed ? save.myPersona : null);
   // Fork 十期: stage cues — CG overlay + BGM player
@@ -2208,65 +2212,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             border-color: rgba(200,160,100,0.3) !important;
           }
         `}</style>
-          {/* ── CoC6 combat round entry ── */}
-          {!save.completed && !freeMode && (
-            <div style={{ display: "flex", gap: 5, marginBottom: 5 }}>
-              {!showCombat ? (
-                <button onClick={() => setCombatOpen(true)}
-                  style={{
-                    flex: 1, padding: "8px 0", borderRadius: 8,
-                    border: "1px solid rgba(200,80,80,0.25)",
-                    background: "rgba(200,80,80,0.08)",
-                    color: "rgba(230,120,110,0.9)",
-                    fontSize: "calc(12px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-                  }}>
-                  <span style={{ fontSize: "calc(14px*var(--app-text-scale,1))" }}>⚔️</span> 开始战斗轮
-                </button>
-              ) : (
-                <div style={{
-                  flex: 1, padding: "7px 10px", borderRadius: 8,
-                  border: "1px solid rgba(200,80,80,0.3)", background: "rgba(200,80,80,0.1)",
-                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-                  fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(230,130,120,0.9)",
-                }}>
-                  <span style={{ fontFamily: "monospace", letterSpacing: "0.05em" }}>
-                    ⚔️ 第{save.combat!.round}轮 · {combatCurrentToken ? `${tokenLabel(combatCurrentToken)}行动` : "—"}
-                  </span>
-                  <button onClick={advanceCombatTurn}
-                    style={{
-                      padding: "5px 10px", borderRadius: 6, border: "1px solid rgba(200,80,80,0.3)",
-                      background: "rgba(0,0,0,0.25)", color: "inherit",
-                      fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
-                    }}>
-                    下一位 →
-                  </button>
-                </div>
-              )}
-              {showCombat && (
-                <button onClick={() => setCombatOpen(true)}
-                  style={{
-                    padding: "8px 12px", borderRadius: 8,
-                    border: "1px solid rgba(200,80,80,0.25)", background: "rgba(200,80,80,0.08)",
-                    color: "rgba(230,120,110,0.9)", fontSize: "calc(12px*var(--app-text-scale,1))",
-                    cursor: "pointer", fontFamily: "inherit", flexShrink: 0,
-                  }}>
-                  ⚔️
-                </button>
-              )}
-              {showCombat && (
-                <button onClick={endCombat}
-                  style={{
-                    padding: "8px 12px", borderRadius: 8,
-                    border: "1px solid rgba(255,255,255,0.12)", background: "transparent",
-                    color: "rgba(255,255,255,0.45)", fontSize: "calc(12px*var(--app-text-scale,1))",
-                    cursor: "pointer", fontFamily: "inherit", flexShrink: 0,
-                  }}>
-                  结束
-                </button>
-              )}
-            </div>
-          )}
+          {/* Fork: combat entry moved into the ➕ menu — during combat a compact status chip stays visible */}
 
           {/* Retry button after API error (shows above choices) */}
           {inEvent && !freeMode && lastFailedAction && currentChoices && currentChoices.length > 0 && !eventContinueLoading && (
@@ -2432,8 +2378,91 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             </div>
           )}
 
+          {/* Fork: active-combat status chip (compact — the panel itself opens from the ➕ menu) */}
+          {showCombat && !freeMode && !eventLoading && !eventContinueLoading && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 6, marginBottom: 5,
+              padding: "5px 8px", borderRadius: 8,
+              border: "1px solid rgba(200,80,80,0.3)", background: "rgba(200,80,80,0.08)",
+              fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(230,130,120,0.9)",
+            }}>
+              <span style={{ fontFamily: "monospace", letterSpacing: "0.05em", flex: 1 }}>
+                ⚔️ 第{save.combat!.round}轮 · {combatCurrentToken ? `${tokenLabel(combatCurrentToken)}行动` : "—"}
+              </span>
+              <button onClick={advanceCombatTurn} style={{
+                padding: "3px 8px", borderRadius: 5, border: "1px solid rgba(200,80,80,0.3)",
+                background: "rgba(0,0,0,0.25)", color: "inherit",
+                fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+              }}>
+                下一位 →
+              </button>
+              <button onClick={() => setCombatOpen(true)} style={{
+                padding: "3px 8px", borderRadius: 5, border: "1px solid rgba(200,80,80,0.25)",
+                background: "rgba(0,0,0,0.25)", color: "inherit",
+                fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+              }}>
+                面板
+              </button>
+              <button onClick={endCombat} style={{
+                padding: "3px 8px", borderRadius: 5, border: "1px solid rgba(255,255,255,0.12)",
+                background: "transparent", color: "rgba(255,255,255,0.45)",
+                fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+              }}>
+                结束
+              </button>
+            </div>
+          )}
+
           {/* ── Input area (hidden during loading) ── */}
-          {!eventLoading && !eventContinueLoading && <div style={{ display: "grid", gridTemplateColumns: "1fr 48px", gap: 6 }}>
+          {!eventLoading && !eventContinueLoading && <div style={{ display: "grid", gridTemplateColumns: "36px 1fr 48px", gap: 6 }}>
+            {/* Fork: ➕ menu — combat / skill check / private talk (folded away from daily investigation) */}
+            <div style={{ position: "relative", display: "flex", alignItems: "stretch" }}>
+              <button type="button" onClick={() => setPlusMenuOpen(!plusMenuOpen)} disabled={freeMode} style={{
+                width: 36, borderRadius: 9, flexShrink: 0,
+                border: plusMenuOpen ? "1px solid var(--c-adv-accent-dim)" : "1px solid var(--c-adv-input-border)",
+                background: plusMenuOpen ? "var(--c-adv-choice-bg)" : "var(--c-adv-input-bg)",
+                color: plusMenuOpen ? "var(--c-adv-accent)" : "var(--c-adv-text-dim)",
+                fontSize: "calc(18px*var(--app-text-scale,1))", cursor: freeMode ? "default" : "pointer",
+                fontFamily: "inherit", lineHeight: 1,
+              }}>＋</button>
+              {plusMenuOpen && (
+                <>
+                  <div onClick={() => setPlusMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 59 }} />
+                  <div style={{
+                    position: "absolute", left: 0, bottom: "calc(100% + 8px)", zIndex: 60,
+                    minWidth: 190, padding: 6,
+                    background: "var(--c-adv-panel-bg)", borderRadius: 12,
+                    border: "1px solid var(--c-adv-input-border)",
+                    boxShadow: "0 8px 28px rgba(0,0,0,0.35)",
+                    display: "flex", flexDirection: "column", gap: 3,
+                  }}>
+                    <button type="button" onClick={() => { setPlusMenuOpen(false); setCombatOpen(true); }} style={{
+                      display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 8,
+                      border: "none", background: "transparent", color: "var(--c-adv-text)",
+                      fontSize: "calc(12px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                    }}>
+                      <span style={{ fontSize: "calc(14px*var(--app-text-scale,1))" }}>⚔️</span> {showCombat ? "战斗轮面板" : "开始战斗轮"}
+                    </button>
+                    <button type="button" onClick={() => { setPlusMenuOpen(false); setSkillPickerOpen(true); }} disabled={freeMode} style={{
+                      display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 8,
+                      border: "none", background: "transparent", color: "var(--c-adv-text)",
+                      fontSize: "calc(12px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                    }}>
+                      <span style={{ fontSize: "calc(14px*var(--app-text-scale,1))" }}>🎲</span> 技能检定{checkSkill.trim() ? `（已选 ${checkSkill.trim()}）` : ""}
+                    </button>
+                    {save.mySecret && inEvent && (
+                      <button type="button" onClick={() => { setPlusMenuOpen(false); setPrivateTalk(prev => !prev); }} style={{
+                        display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 8,
+                        border: "none", background: "transparent", color: privateTalk ? "rgba(190,170,240,0.95)" : "var(--c-adv-text)",
+                        fontSize: "calc(12px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                      }}>
+                        <span style={{ fontSize: "calc(14px*var(--app-text-scale,1))" }}>🔒</span> {privateTalk ? "退出私下交谈" : "私下询问"}
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
               {/* Fork: KP investigation hints (tappable → fills check skill) */}
               {inEvent && currentHints && currentHints.length > 0 && (
@@ -2478,50 +2507,47 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                   ))}
                 </div>
               )}
-              {/* Check skill input (CoC loop: player chooses what to roll) */}
-              <div style={{ display: "flex", gap: 6 }}>
-                <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", lineHeight: "32px", flexShrink: 0, width: 20, textAlign: "center" }}>🎲</span>
-                <input
-                  value={checkSkill}
-                  onChange={e => setCheckSkill(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter" && !freeMode) submitDeclarationWithCheck(); }}
-                  placeholder="检定技能（如 侦查 / 心理学 / 手枪，留空则不检定）"
-                  disabled={eventContinueLoading || eventLoading || freeModeReplying || freeMode}
-                  style={{
-                    flex: 1, minWidth: 0, padding: "7px 10px", borderRadius: 8,
-                    border: `1px solid ${checkSkill ? "rgba(200,160,100,0.35)" : "var(--c-adv-input-border)"}`,
-                    background: "var(--c-adv-input-bg)",
-                    color: checkSkill ? "var(--c-adv-accent)" : "var(--c-adv-body)",
-                    fontSize: "calc(13px*var(--app-text-scale,1))", fontFamily: "inherit", outline: "none",
-                  }}
-                />
-              </div>
-              {/* Fork 八期B: private-talk toggle + NPC name */}
-              {save.mySecret && inEvent && (
-                <div style={{ display: "flex", gap: 5 }}>
+              {/* Fork: check-skill chip (tap → full skill list, no typos) */}
+              {checkSkill.trim() && !freeMode && (
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", flexShrink: 0 }}>🎲</span>
                   <button type="button"
-                    onClick={() => setPrivateTalk(prev => !prev)}
+                    onClick={() => setSkillPickerOpen(true)}
                     style={{
-                      padding: "5px 10px", borderRadius: 7,
-                      border: `1px solid ${privateTalk ? "rgba(150,120,220,0.5)" : "var(--c-adv-input-border)"}`,
-                      background: privateTalk ? "rgba(150,120,220,0.15)" : "var(--c-adv-input-bg)",
-                      color: privateTalk ? "rgba(190,170,240,0.95)" : "var(--c-adv-text-muted)",
+                      padding: "5px 10px", borderRadius: 12,
+                      border: "1px solid rgba(200,160,100,0.35)", background: "rgba(200,160,100,0.08)",
+                      color: "var(--c-adv-accent)", fontSize: "calc(11px*var(--app-text-scale,1))",
+                      cursor: "pointer", fontFamily: "inherit",
+                      display: "flex", alignItems: "center", gap: 5,
+                    }}>
+                    {(() => { const p = skillCheckValue(save.playerSheet, checkSkill.trim(), save.playerStats, is7th ? "coc7" : "coc6"); return <>🎲 {checkSkill.trim()} {p.value}</>; })()}
+                    <span onClick={e => { e.stopPropagation(); setCheckSkill(""); }} style={{ color: "var(--c-adv-text-muted)", padding: "0 2px", cursor: "pointer" }}>✕</span>
+                  </button>
+                  {is7th && diceMode !== "none" && (
+                    <button type="button" onClick={() => setDiceMode("none")} style={{
+                      padding: "5px 9px", borderRadius: 12, border: "1px solid var(--c-adv-input-border)",
+                      background: "var(--c-adv-input-bg)", color: "var(--c-adv-text-dim)",
                       fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
                     }}>
-                    🔒 {privateTalk ? "私下交谈中" : "私下询问"}
-                  </button>
-                  {privateTalk && (
-                    <input
-                      value={privateTalkNpc}
-                      onChange={e => setPrivateTalkNpc(e.target.value)}
-                      placeholder="对谁说（NPC名）"
-                      style={{
-                        flex: 1, minWidth: 0, padding: "5px 10px", borderRadius: 7,
-                        border: "1px solid rgba(150,120,220,0.3)", background: "var(--c-adv-input-bg)",
-                        color: "var(--c-adv-body)", fontSize: "calc(10px*var(--app-text-scale,1))", fontFamily: "inherit", outline: "none",
-                      }}
-                    />
+                      {diceMode === "bonus" ? "✦ 奖励骰 ✕" : "✖ 惩罚骰 ✕"}
+                    </button>
                   )}
+                </div>
+              )}
+              {/* Fork 八期B: private talk lives in the ➕ menu — NPC name input shows only when active */}
+              {privateTalk && (
+                <div style={{ display: "flex", gap: 5 }}>
+                  <input
+                    value={privateTalkNpc}
+                    onChange={e => setPrivateTalkNpc(e.target.value)}
+                    placeholder="对谁说（NPC名）"
+                    style={{
+                      flex: 1, minWidth: 0, padding: "5px 10px", borderRadius: 7,
+                      border: "1px solid rgba(150,120,220,0.3)", background: "var(--c-adv-input-bg)",
+                      color: "var(--c-adv-body)", fontSize: "calc(10px*var(--app-text-scale,1))", fontFamily: "inherit", outline: "none",
+                    }}
+                  />
+                  <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(190,170,240,0.7)", alignSelf: "center" }}>🔒 发送后进入私聊记录</span>
                 </div>
               )}
               {/* Fork: check-value preview (what will be rolled) */}
@@ -2533,28 +2559,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                   </div>
                 );
               })()}
-              {/* 7th edition: bonus/penalty dice selector (fork) */}
-              {is7th && (
-                <div style={{ display: "flex", gap: 5 }}>
-                  {([["none", "普通"], ["bonus", "奖励骰"], ["penalty", "惩罚骰"]] as const).map(([val, t]) => {
-                    const active = diceMode === val;
-                    return (
-                      <button key={val} type="button"
-                        onClick={() => setDiceMode(active ? "none" : val)}
-                        title={val === "bonus" ? "两粒D100取低（条件有利时）" : val === "penalty" ? "两粒D100取高（条件不利时）" : "常规单骰"}
-                        style={{
-                          flex: 1, padding: "5px 0", borderRadius: 7,
-                          border: `1px solid ${active ? "var(--c-adv-accent-dim)" : "var(--c-adv-input-border)"}`,
-                          background: active ? "var(--c-adv-choice-bg)" : "var(--c-adv-input-bg)",
-                          color: active ? "var(--c-adv-accent)" : "var(--c-adv-text-muted)",
-                          fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
-                        }}>
-                        {val === "none" ? "🎲 " : val === "bonus" ? "✦ " : "✖ "}{t}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+              {/* Fork: 7th-edition dice mode moved into the skill picker (per-roll) */}
               {/* Speech input */}
               <div style={{ display: "flex", gap: 6 }}>
                 <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", lineHeight: "32px", flexShrink: 0, width: 20, textAlign: "center" }}>💬</span>
@@ -2663,6 +2668,94 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       )}
 
       {/* ═══ Overlays ═══ */}
+
+      {/* Fork: Skill Picker — full skill list from the sheet, tap to select (no typos) */}
+      {skillPickerOpen && (() => {
+        const allSkills = Object.keys(is7th ? SKILL_BASE_7 : SKILL_BASE_6);
+        const sheetSkills = save.playerSheet?.skills || {};
+        return (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 56,
+            background: "rgba(5,5,10,0.7)", backdropFilter: "blur(6px)",
+            display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+          }} onClick={() => setSkillPickerOpen(false)}>
+            <div onClick={e => e.stopPropagation()} style={{
+              width: "min(420px, 100%)", maxHeight: "78vh", overflowY: "auto",
+              background: "var(--c-adv-panel-bg)", borderRadius: 16,
+              border: "1px solid var(--c-adv-accent-dim)",
+              boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
+              padding: "16px 14px",
+            }}>
+              <div style={{ fontSize: "calc(14px*var(--app-text-scale,1))", fontWeight: 700, color: "var(--c-adv-text)", marginBottom: 3 }}>🎲 选择检定技能</div>
+              <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 12 }}>
+                点选一项挂到本次宣言——数值取自你的角色卡（属性回退也标出）
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {allSkills.map(sk => {
+                  const p = skillCheckValue(save.playerSheet, sk, save.playerStats, is7th ? "coc7" : "coc6");
+                  const active = checkSkill.trim() === sk;
+                  const trained = sheetSkills[sk] !== undefined;
+                  return (
+                    <button key={sk} type="button"
+                      onClick={() => { setCheckSkill(active ? "" : sk); }}
+                      style={{
+                        padding: "6px 10px", borderRadius: 9,
+                        border: `1px solid ${active ? "rgba(200,160,100,0.55)" : "var(--c-adv-input-border)"}`,
+                        background: active ? "rgba(200,160,100,0.15)" : "var(--c-adv-input-bg)",
+                        color: active ? "var(--c-adv-accent)" : trained ? "var(--c-adv-body)" : "var(--c-adv-text-muted)",
+                        fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                        display: "flex", alignItems: "center", gap: 5,
+                      }}>
+                      {sk}
+                      <span style={{ fontFamily: "monospace", fontSize: "calc(9px*var(--app-text-scale,1))", opacity: 0.75 }}>{p.value}</span>
+                      {p.source.includes("(") && <span style={{ fontSize: "calc(8px*var(--app-text-scale,1))", opacity: 0.5 }}>属性</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              {is7th && (
+                <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--c-adv-input-border)" }}>
+                  <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 6 }}>骰型（7版）</div>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    {([["none", "普通"], ["bonus", "奖励骰"], ["penalty", "惩罚骰"]] as const).map(([val, t]) => {
+                      const active = diceMode === val;
+                      return (
+                        <button key={val} type="button"
+                          onClick={() => setDiceMode(active ? "none" : val)}
+                          style={{
+                            flex: 1, padding: "6px 0", borderRadius: 7,
+                            border: `1px solid ${active ? "var(--c-adv-accent-dim)" : "var(--c-adv-input-border)"}`,
+                            background: active ? "var(--c-adv-choice-bg)" : "var(--c-adv-input-bg)",
+                            color: active ? "var(--c-adv-accent)" : "var(--c-adv-text-muted)",
+                            fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                          }}>
+                          {val === "bonus" ? "✦ " : val === "penalty" ? "✖ " : ""}{t}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+                <button type="button" onClick={() => { setCheckSkill(""); setSkillPickerOpen(false); }} style={{
+                  flex: 1, padding: "9px 0", borderRadius: 9,
+                  border: "1px solid var(--c-adv-input-border)", background: "var(--c-adv-input-bg)",
+                  color: "var(--c-adv-text-dim)", fontSize: "calc(12px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                }}>
+                  {checkSkill.trim() ? "清除并关闭" : "关闭"}
+                </button>
+                <button type="button" onClick={() => setSkillPickerOpen(false)} style={{
+                  flex: 1, padding: "9px 0", borderRadius: 9,
+                  border: "none", background: "var(--c-adv-accent-dim)",
+                  color: "var(--c-adv-accent)", fontSize: "calc(12px*var(--app-text-scale,1))", fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                }}>
+                  {checkSkill.trim() ? `确认 ${checkSkill.trim()}` : "不检定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Picker Overlay — who rolls this round */}
       {pickerOverlay && (
