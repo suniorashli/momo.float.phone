@@ -1,8 +1,9 @@
 // lib/map-rpg-engine.ts
 // RPG Map Mode — LLM integration for world generation + event expansion
+// Fork mods: CoC/CoJ-style TRPG mode (CoC 6th Ed. attributes, module import, sparse NPC worlds)
 
 import type { WorldSkeleton, WorldSkeletonInput, EventScene, GameSave, WorldNPC, QuestLine, EncounterSeed, CharacterAgent, AgentDecision, RichRegion, Declaration, CharStats } from "./map-types";
-import { STAT_LABELS, ALL_STATS } from "./map-types";
+import { STAT_LABELS, ALL_STATS, SKILL_STAT_HINT } from "./map-types";
 import { simpleLLMCall } from "./api-helpers";
 import { previewMessagesForApi, sendLLMRequest } from "./chat-engine";
 import type { ApiConfig } from "./settings-types";
@@ -128,14 +129,17 @@ function getActivePrompt(key: "scene" | "resolve" | "worldGen" | "ending", defau
 
 // ── 1. Generate World Skeleton ──
 
-export const DEFAULT_WORLD_GEN_PROMPT = `你是RPG世界架构师兼DM。用户描述世界观，你设计完整世界。
+export const DEFAULT_WORLD_GEN_PROMPT = `你是COC（克苏鲁的呼唤，第6版规则）跑团的守秘人（KP）/世界架构师。用户描述世界观或提供TRPG模组背景，你据此设计完整的调查世界。
 
-核心规则：NPC、支线任务、偶遇事件必须绑定到具体的节点（L2或L3），不是笼统的区域。
+核心规则：NPC、支线调查、偶遇事件必须绑定到具体的节点（L2或L3），不是笼统的区域。
 
-NPC创作指导：
-- personality字段要写一段有画面感的人物描写（5-8句），包含外貌特征、性格、经历、说话方式、小习惯等，让人一读就能记住这个角色
-- NPC中应有较多富有魅力的男性角色，但也要穿插其他类型（女性、老人等）来丰富世界
-- 每个NPC的人设应该有差异，避免同质化
+NPC与怪物创作指导（COC风格，与DND式"每个据点必有NPC"完全相反）：
+- 这是COC跑团，不是DND。区域可以完全没有NPC——无人荒野、废弃宅邸、深海礁石才是常态
+- NPC只在模组设定要求的地方出现：小镇居民、调查线索人物、可疑的学者等。数量宁少勿多
+- 若提供了模组背景，NPC名单、怪物、地点必须严格来自模组设定，禁止自行编造模组外的关键NPC
+- NPC的personality写一段有画面感的描写（4-8句）：外貌、性格、说话方式、可疑之处或与秘密相关的细节
+- 怪物/神话生物也是节点内容：[NPC角色]填creature，性格字段写外形特征、行为模式与危险程度（如"深潜者：湿滑的两栖类人生物，行动迟缓但成群出没，对光敏感，眼神呆滞却透着古老的非人智慧"）
+- 有秘密的人要在#档案里登记（用 [NPC秘密:名字]），名字与NPC名完全一致
 
 只输出下面这种"标签块"纯文本格式，不要 JSON、不要 markdown 代码块、不要任何额外说明文字。
 
@@ -146,90 +150,90 @@ NPC创作指导：
 
 严格按下面示例的字段名和层级输出（这里只给 2 个区域作示例）：
 
-[世界名]示例大陆
-[世界观]一个被古老魔法笼罩的大陆
+[世界名]阿卡姆县
+[世界观]1920年代新英格兰，马萨诸塞州东部。表面平静的小镇之下，不可名状的古老存在正缓缓苏醒
 
 #区域1
-[id]windmoor
-[中文名]风语镇
-[英文名]Windmoor
+[id]arkham
+[中文名]阿卡姆镇
+[英文名]Arkham
 [地理]plains
 [河流数]1
-[邻接]darkwood
-[主城NPC名]李沧海
-[主城NPC性格]五十多岁的老镇长，年轻时是远近闻名的剑客，现在蓄了一把花白的胡子，眼神依然锐利。说话慢悠悠的，总爱用「当年啊」开头讲古。对外来者很热情，但会不动声色地旁敲侧击打听来意。书房里挂着一幅女子画像，从不对人提起。
+[邻接]dunwich
+[区域类型]主城
+[主城NPC名]亨利·阿米蒂奇
+[主城NPC性格]米斯卡塔尼克大学图书馆馆长，六十多岁，戴圆框眼镜，说话引经据典。对乡野流传的怪谈嗤之以鼻，但书库里锁着的那排禁书他从不让人碰。深夜的办公室灯光总是亮到很晚。
 [主城NPC角色]info
 ##L2节点1
-[名称]废弃磨坊
-[NPC名]谢长安
-[NPC性格]二十出头的赏金猎人，总戴着兜帽遮住半张脸。说话极简，点菜都是「随便」，但偶尔冒出的毒舌精准得让人怀疑他一直在观察所有人。左手无名指缺了一截，问他只会说「不小心」。
-[NPC角色]quest
+[名称]米斯卡塔尼克大学图书馆
+[NPC名]黛西·霍金斯
+[NPC性格]图书馆年轻的助理管理员，说话轻声细语，整理书籍的动作近乎强迫症般规整。有人借走某本旧书没有归还时，她会显得异常焦虑。
+[NPC角色]info
 [任务id]sq1
-[任务标题]磨坊的秘密
-[任务简介]调查磨坊地下的异响
+[任务标题]失踪的借阅者
+[任务简介]一位经常查阅禁书的教授已两周未露面
 ##L2节点2
-[名称]河畔集市
-[NPC名]苏瑾年
-[NPC性格]镇上药铺的年轻老板，长相清秀温和，永远带着让人放松的笑。其实是三年前一夜败落的云家大少爷，从不提过去。唯独对流浪猫毫无抵抗力，后门永远放着一碟鱼干。
-[NPC角色]merchant
+[名称]河边旧宅
+[NPC角色]creature
+[NPC性格]宅邸中盘踞的某种东西——只在夜间活动，楼道里传来湿漉漉的拖行声，墙上挂着褪色的家族肖像，画中人的眼睛似乎会转动。
 ##L3节点1
-[名称]古老石碑
+[名称]废弃码头
 [偶遇id]enc1
-[偶遇简介]石碑上的文字突然发光
-[偶遇情绪]mysterious
+[偶遇简介]涨潮时码头下传来非人的吟唱声
+[偶遇情绪]eerie
 
 #区域2
-[id]darkwood
-[中文名]暗影林
-[英文名]Darkwood
+[id]dunwich
+[中文名]敦威治村
+[英文名]Dunwich
 [地理]mountainous
 [河流数]0
-[邻接]windmoor
-[主城NPC名]莫老爹
-[主城NPC性格]暗影林入口守林小屋的独居老人，满脸皱纹但眼神精亮，拄着一根比人还高的木杖。对每个进林子的人都要唠叨一番「林子里的规矩」，但说着说着就跑题讲起自己当年的冒险故事。
-[主城NPC角色]info
+[邻接]arkham
+[区域类型]荒野
 ##L2节点1
-[名称]猎人小屋
-[NPC名]岳野
-[NPC性格]常年独居山林的猎人，晒得很黑，肩膀很宽，说话声音低哑像是不常开口。不太懂人情世故，送人东西直接塞过来不说话。背上有道很长的旧伤疤。
-[NPC角色]info
+[名称]鸟石荒丘
+[NPC角色]creature
+[NPC性格]荒丘上出没的隐形之物——看不见身形，只能靠被压倒的灌木与泥土的骚动判断位置，散发令牲畜发疯的气味。
+##L3节点1
+[名称]巫师之洞
 [偶遇id]enc2
-[偶遇简介]小屋附近发现可疑脚印
-[偶遇情绪]tense
+[偶遇简介]洞窟深处的岩壁上布满非几何的刻痕
+[偶遇情绪]dread
 
 #主线
 [id]mq
-[标题]封印之谜
-[梗概]调查大陆各处的古代封印，阻止黑暗力量复苏
-[阶段1地点]废弃磨坊
-[阶段1简介]在磨坊地下找到第一块封印碎片
-[阶段1解锁]解锁暗影林深处
-[阶段2地点]猎人小屋
-[阶段2简介]从猎人处获得进入林深处的线索
-[阶段2解锁]获得森林地图
+[标题]敦威治的恐怖
+[梗概]一连串怪事背后，某个古老存在即将借尸还魂，调查者必须找到阻止仪式的方法
+[阶段1地点]米斯卡塔尼克大学图书馆
+[阶段1简介]查阅禁书档案，找到失踪教授的研究线索
+[阶段1解锁]获得敦威治村的位置情报
+[阶段2地点]敦威治村
+[阶段2简介]在荒村寻找目击者，查明神秘家族的过去
+[阶段2解锁]获得巫师之洞的地图
 
 #档案
-[隐藏真相]封印是千年前的大法师为了封锁自己的黑暗面而设
-[NPC秘密:李沧海]他其实是大法师的后裔，知道封印的真相但选择隐瞒
-[NPC秘密:谢长安]他是被封印力量吸引来的，目的不纯
-[伏笔1]磨坊地下的符文和石碑上的文字是同一种语言
-[伏笔2]猎人提到林中有不属于任何动物的嚎叫
-[反转]谢长安其实想利用玩家打开封印
-[结局]玩家必须选择是彻底摧毁封印（释放黑暗面）还是用新方法加固（牺牲某个NPC）
+[隐藏真相]失踪的教授发现了召唤仪式的残页，被邪教徒灭口
+[NPC秘密:黛西·霍金斯]她是邪教徒安插在图书馆的眼线，负责监视禁书借阅者
+[伏笔1]失踪教授最后的借阅记录是一本没有人听说过的书
+[伏笔2]敦威治的牲畜近年接连发疯流产
+[反转]阿米蒂奇馆长其实早知道仪式的存在，一直在等"合适的人"来阻止它
+[结局]阻止仪式需要那本人人争夺的禁书——但翻开它的人都难逃疯狂
 
 以上只是 2 个区域的示例。要求：
 - 共 {{region_count}} 个区域，按 #区域1 #区域2 … 顺序编号；[邻接] 必须对称（A 邻接 B 则 B 也邻接 A），多个用顿号、分隔
 - 每个区域 2-4 个 ##L2节点、0-2 个 ##L3节点，节点也顺序编号
-- 每个节点最多绑 1 个 NPC + 1 个任务或偶遇；不需要的字段整组省略即可
-- 每个区域必须有主城 NPC（[主城NPC名][主城NPC性格][主城NPC角色] 不能省）
-- 主线 4-5 个阶段，[阶段N地点] 写具体节点名（不是区域名）
-- 总共 {{npc_count}} 个 NPC 分布在不同节点；至少 2 个在 #档案 里有隐藏身份（用 [NPC秘密:名字]，名字与 NPC 名完全一致）
-- 总共 5-8 个偶遇分布在不同节点
-- [NPC性格] 写一段有画面感的人物描写（5-8 句）
+- 【COC核心规则】[主城NPC名]（及配套两字段）仅在 [区域类型] 为主城/城镇 的区域填写——这类区域全图通常 1-2 个；其余区域（荒野/废墟/禁区）一律留空，只放探索点与怪物/异象
+- 每个节点可绑 1 个NPC或怪物（[NPC角色]creature表示怪物/异象）+ 1 个任务或偶遇；不需要的字段整组省略即可。多数节点应当是无人探索点
+- 主线 4-5 个阶段，[阶段N地点] 写具体节点名（不是区域名）；主线应当是调查/揭秘驱动的推理链，而非杀怪夺宝
+- 若提供了模组背景：NPC、怪物、主线、密档全部取自模组内容，你只负责把模组素材映射成上述区域/节点结构；模组没提的内容不要编造
+- 总共 {{npc_count}} 个NPC/怪物分布在不同节点（含主城NPC与creature）；至少 2 个NPC在 #档案 里有隐藏身份或秘密
+- 总共 5-8 个偶遇分布在不同节点；[偶遇情绪] 优先用 eerie/dread/uncanny/tense（克苏鲁氛围），轻松场合才用 warm/humorous
+- [NPC性格] 写一段有画面感的描写（4-8 句）
 - [地理] 可选：mountainous/plains/canyon/forest/coastal/desert/swamp
 - 世界风格基调：{{tone}}
 - 主线类型倾向：{{main_quest_type}}
-- 难度倾向：{{difficulty}}`;
+- 难度倾向：{{difficulty}}
+{{module_text}}`;
 
 // ── Tagged-block world parser (replaces fragile JSON; same shape as the old JSON.parse) ──
 function parseWorldTaggedFields(block: string): Record<string, string> {
@@ -259,9 +263,15 @@ function worldSplitList(value: string | undefined): string[] {
 function parseWorldNodeBlock(body: string): Record<string, unknown> {
   const f = parseWorldTaggedFields(body);
   const node: Record<string, unknown> = { name: f["名称"] || f["节点名"] || "" };
-  if ((f["NPC名"] || "").trim()) node.npc = { name: f["NPC名"], personality: f["NPC性格"] || "", role: f["NPC角色"] || "info" };
+  if ((f["NPC名"] || "").trim() || (f["NPC角色"] || "").trim() === "creature") {
+    node.npc = {
+      name: f["NPC名"] || (f["名称"] || "").trim() + "（异象）",
+      personality: f["NPC性格"] || f["NPC外形"] || "",
+      role: f["NPC角色"] || "info",
+    };
+  }
   if ((f["任务标题"] || "").trim()) node.quest = { id: f["任务id"] || f["任务ID"] || "", title: f["任务标题"], brief: f["任务简介"] || "" };
-  if ((f["偶遇简介"] || "").trim()) node.encounter = { id: f["偶遇id"] || f["偶遇ID"] || "", brief: f["偶遇简介"], mood: f["偶遇情绪"] || "mysterious" };
+  if ((f["偶遇简介"] || "").trim()) node.encounter = { id: f["偶遇id"] || f["偶遇ID"] || "", brief: f["偶遇简介"], mood: f["偶遇情绪"] || "eerie" };
   return node;
 }
 
@@ -277,9 +287,11 @@ function parseWorldRegionBlock(body: string): Record<string, unknown> {
     geography: f["地理"] || "plains",
     river_count: worldIntField(f["河流数"]),
     adjacent_to: worldSplitList(f["邻接"]),
+    region_type: f["区域类型"] || "",
     l2_nodes: [] as unknown[],
     l3_nodes: [] as unknown[],
   };
+  // Main-city NPC stays optional (CoC worlds often have no hub NPC in a region)
   if ((f["主城NPC名"] || "").trim()) region.l1_npc = { name: f["主城NPC名"], personality: f["主城NPC性格"] || "", role: f["主城NPC角色"] || "info" };
   if ((f["主城任务标题"] || "").trim()) region.l1_quest = { id: f["主城任务id"] || `q_${region.id}`, title: f["主城任务标题"], brief: f["主城任务简介"] || "" };
   for (let i = 0; i < subs.length; i++) {
@@ -357,15 +369,17 @@ export async function generateWorldSkeleton(
   apiConfig: ApiConfig,
   vars?: Record<string, string>,
 ): Promise<WorldSkeleton> {
-  // Replace {{variables}} in prompt
+  // Replace {{variables}} in prompt (module_text is injected the same way — empty by default)
   let prompt = getActivePrompt("worldGen", DEFAULT_WORLD_GEN_PROMPT);
   if (vars) {
     for (const [key, val] of Object.entries(vars)) {
-      prompt = prompt.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), val);
+      prompt = prompt.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), val ?? "");
     }
   }
+  // Strip the trailing module placeholder if the var was absent (avoid a dangling heading in the prompt)
+  prompt = prompt.replace(/\n?{{module_text}}\s*$/, "").replace(/{{module_text}}/g, "");
 
-  const userMsg = `世界描述：${userDescription}\n\n同行角色：\n${companionDescriptions.map((d, i) => `${i + 1}. ${d}`).join("\n")}`;
+  const userMsg = `世界描述：${userDescription}\n\n同行角色：\n${companionDescriptions.map((d, i) => `${i + 1}. ${d}`).join("\n") || "（无）"}`;
 
   const result = await simpleLLMCall(apiConfig, [
     { role: "system", content: prompt },
@@ -463,7 +477,7 @@ export async function generateWorldSkeleton(
   for (const r of richRegions) {
     for (const n of [...r.l2_nodes, ...r.l3_nodes]) {
       if (n.encounter) {
-        encounterPool.push({ id: n.encounter.id, brief: n.encounter.brief, mood: (n.encounter.mood || "mysterious") as EncounterSeed["mood"], locationTypes: [r.geography], locationNode: n.name });
+        encounterPool.push({ id: n.encounter.id, brief: n.encounter.brief, mood: (n.encounter.mood || "eerie") as EncounterSeed["mood"], locationTypes: [r.geography], locationNode: n.name });
       }
     }
   }
@@ -512,9 +526,9 @@ export async function generateWorldSkeleton(
 
 // ── 2a. DM Scene — generates narration + NPC lines + choices (DM knows secrets) ──
 
-export const DEFAULT_DM_SCENE_PROMPT = `你是RPG世界的DM。你控制旁白和NPC，不替队伍成员说话。平等对待所有队员，所有成员都用名字称呼。
+export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。你控制旁白和NPC，不替调查员（队伍成员）说话。平等对待所有成员，用名字称呼他们。
 
-职责：描述场景、扮演NPC、推进剧情、埋伏笔、给玩家选项。
+职责：描述场景、扮演NPC、推进调查、埋伏笔、给玩家选项。这是克苏鲁神话跑团：恐怖与未知是主旋律，战斗是最后的手段，理智比生命更脆弱。
 
 【人称规则·重要】
 - 用户也是队伍成员之一，必须用 {{user}} 称呼用户，不要用"你"或"你们"指代用户。
@@ -528,10 +542,21 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是RPG世界的DM。你控制旁白�
   · 前期（1-2阶段）：铺垫世界观，介绍关键NPC，埋下伏笔（从密档的foreshadowing中选），让玩家对真相产生好奇
   · 中期（3阶段左右）：开始揭示部分真相，触发反转（密档的plotTwist），NPC暴露隐藏面目，冲突升级
   · 后期（最后1-2阶段）：收束剧情，重要抉择，走向结局（密档的endgame），营造紧迫感
-- 每个场景至少做一件推进剧情的事：给一条主线线索/引导玩家去下一个主线地点/让NPC暗示某个伏笔/揭示一个秘密
+- 每个场景至少做一件推进剧情的事：给一条线索/引导玩家去下一个关键地点/让NPC暗示某个伏笔/揭示一个秘密
 - 选项设计要引导剧情前进：至少一个选项与主线相关，让玩家有理由去探索下一个关键地点
-- 不要让玩家在同一个地方原地转圈——如果当前地点的事件已经处理完，暗示他们该去哪里
-- advance=true表示当前主线阶段完成，请在关键剧情节点（获得重要物品/击败关键敌人/揭示重大真相）时设为true
+- 不要让玩家在同一个地方原地转圈——如果当前地点的调查已经完成，暗示他们该去哪里
+- advance=true表示当前主线阶段完成，请在关键剧情节点（获得关键线索/揭示重大真相/逃出险境）时设为true
+
+【COC氛围与判定】
+- 恐怖靠暗示而非血浆：不明声响、反常细节、旁人的欲言又止
+- 暴力遭遇战是危险且往往致命的——逃走、躲避、求助通常比战斗更明智
+- 属性检定：选项可以带stat_check，系统会抽一个人掷D100（≤属性值=成功）
+  · stat可用：力量str/体质con/意志pow/敏捷dex/外貌app/体型siz/智力int/教育edu/幸运lck
+  · 也可写COC技能名，如{"stat":"侦查"}、{"stat":"图书馆使用"}、{"stat":"心理学"}、{"stat":"潜行"}——系统会换算成对应属性掷骰
+  · 指定谁掷：stat_check里加who字段，如{"stat":"侦查","who":"{{user}}"}——用于只适合特定人的行动
+  · 不指定who：系统随机抽一个人掷——此时选项描述必须是全队通用的（如"小心搜索房间"）
+- SAN损失：目睹恐怖场景时在lost里用"SAN-5"（玩家）或"角色名:SAN-3"扣理智，配合narration描写恐惧与幻觉
+- HP损失格式同旧例："HP-15"或"小雪:HP-10"
 
 【NPC扮演】
 - NPC有自己的性格和秘密（见密档），对话要体现性格
@@ -540,10 +565,6 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是RPG世界的DM。你控制旁白�
 
 【位置更新】如果剧情中队伍移动到了新地点，move_to必须填写目的地节点名（从地图节点中选）。不填则位置不变。
 
-【属性检定】选项可以带stat_check，系统会抽一个人掷D100（≤属性值=成功），你在下一轮根据成败描述结果。
-- 指定谁掷：stat_check里加who字段，如{"stat":"cha","who":"{{user}}"}或{"stat":"str","who":"谢长安"}——用于只适合特定人的行动
-- 不指定who：系统随机抽一个人掷——此时选项描述必须是全队通用的（如"小心前进"），不能写只适合某个人的行动（如"保持名媛姿态"）
-
 【旁白排版】
 - narration 必须按自然段分段书写。场景变化、人物动作、气氛描写、结果揭示之间要换段。
 - 在 narration 字符串内部使用 \\n\\n 表示空行换段，不要把整段旁白挤成一整块。
@@ -551,7 +572,7 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是RPG世界的DM。你控制旁白�
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
-{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动，像是在提醒来客这里并不太平。\\n\\n柜台后的老板抬起头，看了队伍一眼。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"角色们看到的（传给角色AI）","choices":[{"label":"保持警惕前进","stat_check":{"stat":"per"}},{"label":"{{user}}优雅地与贵族周旋","stat_check":{"stat":"cha","who":"{{user}}"}},{"label":"用钥匙开门","requires":"古老钥匙"},{"label":"直接离开"}],"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
+{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动，像是在提醒来客这里并不太平。\\n\\n柜台后的老板抬起头，看了队伍一眼。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"角色们看到的（传给角色AI）","choices":[{"label":"小心地搜索房间","stat_check":{"stat":"侦查"}},{"label":"{{user}}不动声色地套话","stat_check":{"stat":"心理学","who":"{{user}}"}},{"label":"用钥匙开门","requires":"古老钥匙"},{"label":"直接离开"}],"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品或SAN-5"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
 
 export type DMSceneResult = {
   narration: string;
@@ -593,6 +614,7 @@ export type DMContext = {
   partyStatus?: {
     hp: number;
     maxHp: number;
+    san?: number;
     items: string[];
     playerStats?: import("./map-types").CharStats;
     companions: { name: string; affinity: number; stats: import("./map-types").CharStats; status: string }[];
@@ -638,7 +660,7 @@ function buildDMUserMsg(ctx: DMContext): string {
       // L2 nodes
       for (const n of r.l2_nodes) {
         const parts: string[] = [];
-        if (n.npc) parts.push(`NPC:${n.npc.name}(${n.npc.personality})`);
+        if (n.npc) parts.push(`${n.npc.role === "creature" ? "异象/怪物" : "NPC"}:${n.npc.name}(${n.npc.personality})`);
         if (n.quest) parts.push(`支线「${n.quest.title}」[${sqStatus[n.quest.id] || "未触发"}]—${n.quest.brief}`);
         if (n.encounter) parts.push(`偶遇:${n.encounter.brief}(${n.encounter.mood})`);
         for (const [stageIdx, nodeName] of Object.entries(mqNodeMap)) {
@@ -649,7 +671,7 @@ function buildDMUserMsg(ctx: DMContext): string {
       // L3 nodes
       for (const n of r.l3_nodes) {
         const parts: string[] = [];
-        if (n.npc) parts.push(`NPC:${n.npc.name}(${n.npc.personality})`);
+        if (n.npc) parts.push(`${n.npc.role === "creature" ? "异象/怪物" : "NPC"}:${n.npc.name}(${n.npc.personality})`);
         if (n.quest) parts.push(`支线「${n.quest.title}」[${sqStatus[n.quest.id] || "未触发"}]`);
         if (n.encounter) parts.push(`偶遇:${n.encounter.brief}(${n.encounter.mood})`);
         if (parts.length) lines.push(`- [L3]${n.name}: ${parts.join(" | ")}`);
@@ -705,26 +727,27 @@ ${ctx.npcName ? `NPC：${ctx.npcName}（${ctx.npcPersonality}）` : ""}
 （{{user}}是用户。所有输出里指代用户都必须写"{{user}}"，不要写"你"或"你们"；其余成员也用名字。不替任何成员说话。需要指代全队时写"队伍"或"众人"。）
 
 # 队伍状态
-${ctx.partyStatus ? `HP：${ctx.partyStatus.hp}/${ctx.partyStatus.maxHp}
+${ctx.partyStatus ? `HP：${ctx.partyStatus.hp}/${ctx.partyStatus.maxHp}${typeof ctx.partyStatus.san === "number" ? `\nSAN：${ctx.partyStatus.san}/99` : ""}
 物品栏：${ctx.partyStatus.items.join("、") || "空"}
 玩家属性：${ctx.partyStatus.playerStats ? formatStats(ctx.partyStatus.playerStats) : "?"}
 ${ctx.partyStatus.companions.map(c => `${c.name}：好感${c.affinity} ${formatStats(c.stats)}${c.status ? ` [${c.status}]` : ""}`).join("；")}` : "无数据"}
 
-# 规则
-属性：力量str/体质con/敏捷dex/智力int/感知per/魅力cha/运气lck（1-100）。属性成长由系统自动处理，DM不要在gained里加属性。
-HP：生命值。DM根据剧情在lost里扣HP，格式"HP-15"（玩家）或"小雪:HP-10"（角色）。
-属性扣减：受伤扣体质、惊吓扣感知等，格式如"体质-5"或"小雪:力量-3"。
+# 规则（COC第6版）
+属性（百分值）：力量str/体质con/意志pow/敏捷dex/外貌app/体型siz/智力int/教育edu/理智san/幸运lck。属性成长由系统自动处理，DM不要在gained里加属性。
+HP：生命值，由体质与体型决定。DM根据剧情在lost里扣HP，格式"HP-15"（玩家）或"小雪:HP-10"（角色）。
+SAN：理智值（0-99）。目睹恐怖、阅读禁书、直面神话存在都会扣SAN，格式"SAN-5"（玩家）或"小雪:SAN-3"（角色）。SAN大量流失会导致恐惧发作——描述手抖、尖叫、瘫软或歇斯底里。SAN归零意味着疯狂，角色失去自控。
+属性扣减：受伤扣体质、惊吓扣意志等，格式如"体质-5"或"小雪:力量-3"。
 
 掷骰判定结果（系统自动判定，DM必须严格遵守）：
 - 大成功：任务超额完成，获得额外奖励或意外发现
 - 困难成功：任务勉强完成，可能有小代价
 - 成功：任务正常完成
 - 失败：任务未完成，可能受伤扣HP、丢失物品、暴露位置
-- 大失败：严重后果——重伤（扣大量HP）、物品损坏、触发危险
+- 大失败：严重后果——重伤（扣大量HP）、物品损坏、触发危险或惊惧（额外扣SAN）
 【重要】属性检定时，系统会随机选队伍中一个人掷骰，结果代表整个队伍的判定。根据掷骰结果（成功/失败/大成功/大失败）描述该行动对所有人的影响。
 
 选项设计：
-- 属性判定：stat_check，如{"stat":"dex","min":40}
+- 属性/技能判定：stat_check，如{"stat":"侦查"}、{"stat":"图书馆使用"}、{"stat":"dex"}；COC技能名（侦查/聆听/图书馆使用/心理学/潜行/话术/急救等）会自动换算到对应属性
 - 物品要求：requires，如{"label":"用钥匙开门","requires":"古老钥匙"}
 journal字段：用第三人称记录（用 {{user}} 而不是"我"或"你"）。
 日志：${truncateByTokenBudget(ctx.recentJournal, tokenConfig.journalTokenBudget).join("；")}
@@ -1086,13 +1109,13 @@ export async function previewAdventureCompanionPromptPayload(
 
 // ── 2f. DM Resolve — resolves all declarations together ──
 
-export const DEFAULT_DM_RESOLVE_PROMPT = `你是RPG世界的DM。这是裁定阶段——所有队员已宣言本轮行动。平等对待所有队员，所有成员都用名字称呼。
+export const DEFAULT_DM_RESOLVE_PROMPT = `你是COC跑团的守秘人（KP）。这是裁定阶段——所有调查员已宣言本轮行动。平等对待所有成员，所有成员都用名字称呼。
 
 你需要：
 1. 根据每个人的宣言描述结果（成功/失败/意外后果）
 2. NPC对所有角色的回应（有人说话了就要回应）
 3. 角色之间的互动呼应
-4. 推进主线剧情（不要让剧情停滞！但也不要替用户做决定，必须尊重用户决策！）
+4. 推进主线调查（不要让剧情停滞！但也不要替用户做决定，必须尊重用户决策！）
 5. 给出推动故事前进的选项
 
 注意：每个角色的宣言只是"意图"，实际结果由你裁定。你要把所有人的行动编织成一段连贯的叙事。
@@ -1108,18 +1131,21 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是RPG世界的DM。这是裁定阶
 - 每次裁定至少推进一步剧情：发现新线索/揭示部分真相/NPC关系变化/地图新区域解锁
 - 看[进展]判断节奏：前期多埋伏笔、中期触发反转升级冲突、后期收束走向结局
 - 裁定结果要有后果——选择和行动应该影响后续剧情走向，不要每次都"安全度过"
-- advance=true：在完成主线阶段的关键事件时设为true（获得关键物品/击败关键敌人/揭示重大真相）
+- advance=true：在完成主线阶段的关键事件时设为true（获得关键线索/揭示重大真相/逃出险境）
 - 选项设计：至少一个选项与主线相关，引导玩家前往下一个关键地点或面对关键抉择
 
 【位置更新】move_to字段：
-- 全员一起移动 → 字符串："酒吧"
-- 分头行动 → 对象：{"{{user}}":"酒吧","谢长安":"废弃磨坊"}（用户也用 {{user}}，其他用角色名）
+- 全员一起移动 → 字符串："图书馆"
+- 分头行动 → 对象：{"{{user}}":"图书馆","谢长安":"废弃宅邸"}（用户也用 {{user}}，其他用角色名）
 - 没人移动 → 留空""
 - 如果队伍分散在不同地点，narration中按地点分段描述各自的经历。
 
-【属性检定】选项可以带stat_check，系统会抽一个人掷D100（≤属性值=成功），你在下一轮根据成败描述结果。
-- 指定谁掷：stat_check里加who，如{"stat":"cha","who":"{{user}}"}——用于只适合特定人的行动
+【COC判定】选项可以带stat_check，系统会抽一个人掷D100（≤属性值=成功）：
+- 属性键：力量str/体质con/意志pow/敏捷dex/外貌app/体型siz/智力int/教育edu/幸运lck
+- 也可写COC技能名：侦查/聆听/图书馆使用/心理学/潜行/话术/急救……系统自动换算到对应属性
+- 指定谁掷：stat_check里加who，如{"stat":"话术","who":"{{user}}"}——用于只适合特定人的行动
 - 不指定who：随机抽人掷——选项描述必须全队通用
+- SAN损失：lost里用"SAN-5"或"角色名:SAN-3"扣理智，配合恐惧描写
 
 【旁白排版】
 - narration 必须按自然段分段书写。场景变化、人物动作、气氛描写、结果揭示之间要换段。
@@ -1128,7 +1154,7 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是RPG世界的DM。这是裁定阶
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
-{"narration":"火光在墙上跳了两下，照得每个人的神情都忽明忽暗。\\n\\n队伍各自的行动在同一刻撞在一起，让原本僵持的局势突然松动。\\n\\n门外传来的脚步声，说明新的变化已经逼近。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"新局势描述","choices":[{"label":"保持警惕前进","stat_check":{"stat":"per"}},{"label":"{{user}}优雅地周旋","stat_check":{"stat":"cha","who":"{{user}}"}},{"label":"直接离开"}],"journal":"日志","gained":["获得物品"],"lost":["失去物品"],"advance":false,"ending":false,"move_to":"节点名 或 {\"{{user}}\":\"节点名\",\"角色名\":\"节点名\"}","world_events":["世界各处事件"]}`;
+{"narration":"火光在墙上跳了两下，照得每个人的神情都忽明忽暗。\\n\\n队伍各自的行动在同一刻撞在一起，让原本僵持的局势突然松动。\\n\\n门外传来的脚步声，说明新的变化已经逼近。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"新局势描述","choices":[{"label":"小心地调查声音来源","stat_check":{"stat":"聆听"}},{"label":"{{user}}镇定地与警察周旋","stat_check":{"stat":"话术","who":"{{user}}"}},{"label":"直接离开"}],"journal":"日志","gained":["获得物品"],"lost":["失去物品或SAN-3"],"advance":false,"ending":false,"move_to":"节点名 或 {\"{{user}}\":\"节点名\",\"角色名\":\"节点名\"}","world_events":["世界各处事件"]}`;
 
 async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneResult> {
   const userMsg = buildDMUserMsg(ctx);
@@ -1225,6 +1251,28 @@ export function rollD100(statValue: number): { roll: number; level: "crit" | "ha
   return { roll, level: "fail" };                                              // 失败
 }
 
+/** Resolve a stat_check target: accept a CoC6 attribute key (en/cn) or a skill name
+ *  (侦查/聆听/图书馆使用/…) and return a canonical StatKey. Falls back to int. */
+export function resolveCheckStat(raw: string): { key: import("./map-types").StatKey; label: string } {
+  const trimmed = (raw || "").trim().toLowerCase();
+  const enKeyMap: Record<string, import("./map-types").StatKey> = {
+    str: "str", con: "con", pow: "pow", dex: "dex", app: "app", siz: "siz", int: "int", edu: "edu", san: "san", lck: "lck",
+    // legacy 7-stat keys → CoC6 mapping (old saves / DM habits)
+    per: "int", cha: "app",
+  };
+  const cnKeyMap: Record<string, import("./map-types").StatKey> = {
+    力量: "str", 体质: "con", 意志: "pow", 敏捷: "dex", 外貌: "app", 体型: "siz", 智力: "int", 教育: "edu", 理智: "san", 幸运: "lck",
+    感知: "int", 魅力: "app",
+  };
+  if (enKeyMap[trimmed]) return { key: enKeyMap[trimmed], label: STAT_LABELS[enKeyMap[trimmed]] };
+  if (cnKeyMap[trimmed]) return { key: cnKeyMap[trimmed], label: STAT_LABELS[cnKeyMap[trimmed]] };
+  if (SKILL_STAT_HINT[trimmed]) {
+    const key = SKILL_STAT_HINT[trimmed];
+    return { key, label: `${raw}(${STAT_LABELS[key]})` };
+  }
+  return { key: "int", label: `${raw}(智力)` };
+}
+
 export const ROLL_LABELS: Record<string, string> = {
   crit: "大成功!", hard: "困难成功", success: "成功", fail: "失败", fumble: "大失败!",
 };
@@ -1298,8 +1346,8 @@ export function formatGameTime(day: number, time: GameSave["gameTime"]): string 
 // 4. Agent Decision Engine
 // ═══════════════════════════════════════
 
-const AGENT_DECISION_PROMPT = `你是一个RPG冒险世界中的角色。你有自己的性格，正在这个世界中自由冒险。
-你需要根据当前状况决定下一步行动。你是一个有主见的冒险者，不是NPC。
+const AGENT_DECISION_PROMPT = `你是一个COC跑团世界中的调查员。你有自己的性格，正在这个世界中调查超自然事件。
+你需要根据当前状况决定下一步行动。你是一个有主见的调查员，不是NPC。
 
 你的可用技能：
 - move：移动到相邻地点（消耗AP）
@@ -1320,9 +1368,10 @@ const AGENT_DECISION_PROMPT = `你是一个RPG冒险世界中的角色。你有�
 等等。
 
 决策原则：
-- 基于你的性格做决定（冲动的角色更爱冒险，谨慎的更爱搜索和观察）
-- 不要总是跟着用户，你有自己的目标和好奇心
-- 如果发现了有趣的事，主动联系用户分享
+- 基于你的性格做决定（好奇的角色更爱调查，谨慎的更爱观察和跟随）
+- 不要总是跟着用户，你有自己的调查目标
+- 如果发现了可疑的事，主动联系用户分享
+- 遇到危险优先保全自己（COC调查员的生存智慧）
 - AP不足时要休息
 - 偶尔想去和用户汇合（不要一直独自行动）`;
 
@@ -1347,7 +1396,7 @@ export async function runAgentDecision(
   const userMsg = `你是${context.characterName}（${context.characterPersonality}）
 世界：${context.worldLore}
 当前位置：${context.currentLocationName}
-HP：${agent.hp}/${agent.maxHp}
+HP：${agent.hp}/${agent.maxHp}${typeof agent.san === "number" ? ` SAN：${agent.san}` : ""}
 游戏时间：${context.gameTime}
 用户在：${context.userLocationName}${agent.currentNodeId === context.userNodeId ? "（和你同一地点）" : ""}
 
@@ -1453,19 +1502,19 @@ export function executeAgentAction(
 // Ending Generation — epilogue when main quest is completed
 // ══════════════════════════════════════════════════════════════
 
-export const DEFAULT_DM_ENDING_PROMPT = `你是RPG世界的DM。主线任务已全部完成，现在要为这个故事写结局。
+export const DEFAULT_DM_ENDING_PROMPT = `你是COC跑团的守秘人（KP）。主线调查已全部完成，现在要为这个故事写结局。
 
 根据[密档]中的endgame设定、玩家的选择、NPC的关系变化，写出一个完整的结局。
 
 要求：
 - paragraphs数组：5-8段结局描述，按以下顺序：
-  1. 世界发生了什么变化（主线结果对世界的影响）
+  1. 世界发生了什么变化（主线的真相被揭开/掩盖后，世界恢复了怎样的平静或埋下了怎样的隐患）
   2. 主要NPC各自的结局（根据玩家与他们的互动和好感度）
-  3. 同伴角色的结局（根据好感度和经历写出不同走向）
-  4. 玩家自己的结局
+  3. 同伴调查员的结局（根据好感度、SAN值和经历写出不同走向）
+  4. 玩家自己的结局（是否付出理智的代价）
 - closing：一句简短的收束语（诗意/感性，10-20字）
 - 每段50-100字，有画面感
-- 好感度高的角色结局更温暖，好感度低的更疏远
+- 好感度高的角色结局更温暖，好感度低的更疏远；SAN损失惨重的角色结局带有阴影
 - 基于玩家实际做过的选择，不要编造没发生过的事
 - 指代玩家/用户本人时，使用 {{user}}，不要写"你"或"你们"
 
@@ -1512,14 +1561,14 @@ export async function generateEnding(ctx: DMContext, apiConfig: ApiConfig): Prom
 // Adventure Summary — cumulative LLM summary of journal entries
 // ══════════════════════════════════════════════════════════════
 
-export const DEFAULT_ADVENTURE_SUMMARY_PROMPT = `你是一个故事总结助手。下面是一个跑团游戏（剧本杀）的完整日志记录。请用连贯的叙事方式，全面总结这次冒险的经历，包括：
+export const DEFAULT_ADVENTURE_SUMMARY_PROMPT = `你是一个故事总结助手。下面是一个跑团游戏（COC跑团）的完整日志记录。请用连贯的叙事方式，全面总结这次冒险的经历，包括：
 
 - 故事背景和世界观
 - 主要事件和剧情转折（按时间顺序）
 - 遇到的重要NPC和他们的态度/关系变化
 - 做出的关键选择和后果
 - 角色之间的互动和关系发展
-- 获得和失去的重要物品
+- 获得和失去的重要物品、理智(SAN)的损耗
 - 当前的局势和悬念
 
 要求：

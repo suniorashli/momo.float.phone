@@ -1,13 +1,52 @@
 // lib/map-types.ts
 // RPG Map Mode — all type definitions
 
-// ── Character Stats (CoC-style, 1-100) ──
-export type StatKey = "str" | "con" | "dex" | "int" | "per" | "cha" | "lck";
+// ── Character Stats (CoC 6th Edition) ──
+// 8 base attributes rolled 3D6 / 2D6+6 / 3D6+3, stored ×5 as percentages (15-105).
+// san = SAN, starts at POW×5. lck = Luck, independent 3D6×5 roll (not derived from POW).
+export type StatKey = "str" | "con" | "pow" | "dex" | "app" | "siz" | "int" | "edu" | "san" | "lck";
 export type CharStats = Record<StatKey, number>;
 export const STAT_LABELS: Record<StatKey, string> = {
-  str: "力量", con: "体质", dex: "敏捷", int: "智力", per: "感知", cha: "魅力", lck: "运气",
+  str: "力量", con: "体质", pow: "意志", dex: "敏捷", app: "外貌", siz: "体型", int: "智力", edu: "教育", san: "理智", lck: "幸运",
 };
-export const ALL_STATS: StatKey[] = ["str", "con", "dex", "int", "per", "cha", "lck"];
+export const ALL_STATS: StatKey[] = ["str", "con", "pow", "dex", "app", "siz", "int", "edu", "san", "lck"];
+/** Base attributes used for CoC6 character creation rolls (san/lck are handled separately). */
+export const BASE_STATS: StatKey[] = ["str", "con", "pow", "dex", "app", "siz", "int", "edu"];
+/** Skill → attribute approximation: CoC6 checks are mostly skill checks; the DM may name a
+ *  skill in stat_check. We map common CoC6 skills onto the 10 attributes so rolls stay
+ *  meaningful, falling back to INT-flavoured attributes when unknown. */
+export const SKILL_STAT_HINT: Record<string, StatKey> = {
+  侦查: "int", 聆听: "dex", 潜行: "dex", 攀爬: "dex", 游泳: "str", 跳跃: "dex",
+  图书馆使用: "int", 历史: "edu", 医学: "edu", 法律: "edu", 考古学: "edu", 神秘学: "edu",
+  人类学: "edu", 会计: "edu", 博物学: "edu", 精神分析: "pow", 话术: "app", 说服: "app",
+  议价: "app", 信用评级: "app", 心理学: "pow", 急救: "int", 锁匠: "dex", 妙手: "dex",
+  伪装: "app", 闪避: "dex", 投掷: "dex", 驾驶: "dex", 骑术: "dex", 射击: "dex",
+  拳击: "str", 擒抱: "str", 追踪: "int", 导航: "int", 母语: "edu", 外语: "edu",
+  电气维修: "edu", 机械维修: "edu", 摄影: "dex", 生存: "con", 艺术: "app", 手艺: "dex",
+};
+/** CoC6 damage bonus table: STR+SIZ sum → DB string. */
+export function lookupDB(sum: number): string {
+  if (sum <= 12) return "-1D6";
+  if (sum <= 16) return "-1D4";
+  if (sum <= 24) return "0";
+  if (sum <= 32) return "+1D4";
+  if (sum <= 40) return "+1D6";
+  if (sum <= 48) return "+2D6";
+  if (sum <= 56) return "+3D6";
+  if (sum <= 64) return "+4D6";
+  if (sum <= 72) return "+5D6";
+  if (sum <= 80) return "+6D6";
+  if (sum <= 88) return "+7D6";
+  if (sum <= 96) return "+8D6";
+  return "+9D6";
+}
+/** Derived combat values from CoC6 base attributes (percent scale). */
+export type DerivedStats = {
+  hp: number;      // ceil((CON + SIZ) / 2), from raw values
+  mp: number;      // floor(POW / 5)
+  mov: number;     // 8 (base)
+  db: string;      // damage bonus by STR+SIZ
+};
 
 // ── Node Content (NPC + quest + encounter bound to specific node) ──
 export type NodeContent = {
@@ -72,14 +111,14 @@ export type WorldNPC = {
   personality: string;
   locationRegion: string;
   locationNode?: string;      // specific node name
-  role: "quest" | "merchant" | "info" | "ambient" | "rival";
+  role: "quest" | "merchant" | "info" | "ambient" | "rival" | "creature";
   relatedQuestIds: string[];
 };
 
 export type EncounterSeed = {
   id: string;
   brief: string;
-  mood: "tense" | "warm" | "mysterious" | "humorous" | "romantic";
+  mood: "tense" | "warm" | "mysterious" | "humorous" | "romantic" | "dread" | "eerie" | "uncanny";
   locationTypes: string[];
   locationNode?: string;      // specific node name
 };
@@ -162,6 +201,7 @@ export type GameSave = {
   visitedNodes: string[];
   hp: number;
   maxHp: number;
+  san?: number;                  // CoC6 SAN (optional — old saves may lack it)
   playerStats: CharStats;
 
   // Companion agents — each moves independently
@@ -218,6 +258,7 @@ export type CharacterAgent = {
   completedSideQuests: string[];
   hp: number;
   maxHp: number;
+  san?: number;
   journal: JournalEntry[];
   affinity: number;            // towards user, 0-100
   stats: CharStats;

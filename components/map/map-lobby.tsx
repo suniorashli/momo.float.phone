@@ -67,6 +67,24 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   const [mainQuestType, setMainQuestType] = useState("");
   const [npcCount, setNpcCount] = useState(12);
   const [difficulty, setDifficulty] = useState("");
+  // TRPG module background text (imported from txt) — injected into world-gen prompt
+  const [moduleText, setModuleText] = useState("");
+  const [moduleName, setModuleName] = useState("");
+  const [moduleLoading, setModuleLoading] = useState(false);
+  const handleModuleFile = (file: File | null) => {
+    if (!file) return;
+    setModuleLoading(true);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      // Cap at ~12000 chars to keep the prompt within context limits
+      setModuleText(text.length > 12000 ? text.slice(0, 12000) : text);
+      setModuleName(file.name);
+      setModuleLoading(false);
+    };
+    reader.onerror = () => setModuleLoading(false);
+    reader.readAsText(file, "utf-8");
+  };
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [genError, setGenError] = useState<{ reason: string; raw: string } | null>(null);
@@ -206,6 +224,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         main_quest_type: mainQuestType || "自由发挥",
         npc_count: String(npcCount),
         difficulty: difficulty || "适中",
+        ...(moduleText.trim() ? { module_text: `\n# 导入的模组背景（TRPG模组设定，世界必须严格按此素材构建）\n${moduleText.trim()}` } : {}),
       };
       const skeleton = await generateWorldSkeleton(description, [], apiConfig, vars);
 
@@ -453,11 +472,50 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
             {/* ── Divider ── */}
             <div style={{ height: 1, background: "linear-gradient(90deg, transparent, rgba(200,160,100,0.15), transparent)", margin: "2px 0 14px" }} />
 
+            {/* ── TRPG module import (txt) ── */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(200,160,100,0.5)", marginBottom: 6, letterSpacing: "0.08em" }}>
+                导入模组背景（可选 · txt）
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <label style={{
+                  flex: 1, padding: "8px 10px", borderRadius: 7, textAlign: "center",
+                  border: `1px solid ${moduleText ? "rgba(200,160,100,0.4)" : "rgba(200,160,100,0.1)"}`,
+                  background: moduleText ? "rgba(200,160,100,0.1)" : "rgba(0,0,0,0.2)",
+                  color: moduleText ? "#e8d0a0" : "rgba(255,255,255,0.35)",
+                  fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>
+                  {moduleLoading ? "读取中..." : moduleText ? `📄 ${moduleName}（已导入 ${moduleText.length} 字）` : "选择 .txt 模组文件（docx 请先另存为 txt）"}
+                  <input type="file" accept=".txt,.md,text/plain" hidden onChange={e => handleModuleFile(e.target.files?.[0] ?? null)} />
+                </label>
+                {moduleText && (
+                  <button type="button" onClick={() => { setModuleText(""); setModuleName(""); }}
+                    style={{
+                      padding: "8px 10px", borderRadius: 7,
+                      border: "1px solid rgba(255,100,80,0.2)", background: "transparent",
+                      color: "rgba(255,100,80,0.6)", fontSize: "calc(11px*var(--app-text-scale,1))",
+                      cursor: "pointer", fontFamily: "inherit", flexShrink: 0,
+                    }}>
+                    移除
+                  </button>
+                )}
+              </div>
+              {moduleText && (
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.25)", marginTop: 5, lineHeight: 1.5 }}>
+                  模组将作为世界生成的背景设定：NPC、怪物、地点、主线会优先取自模组内容（超长文件自动截取前 12000 字，建议大模组自行切割）
+                </div>
+              )}
+            </div>
+
+            {/* ── Divider ── */}
+            <div style={{ height: 1, background: "linear-gradient(90deg, transparent, rgba(200,160,100,0.15), transparent)", margin: "2px 0 14px" }} />
+
             {/* ── Sliders ── */}
             <div style={{ display: "flex", gap: 20, marginBottom: 18 }}>
               {([
                 { label: "区域", value: regionCount, setter: setRegionCount, min: 3, max: 10 },
-                { label: "NPC", value: npcCount, setter: setNpcCount, min: 5, max: 20 },
+                { label: "NPC/怪物", value: npcCount, setter: setNpcCount, min: 0, max: 20 },
               ] as const).map(s => (
                 <div key={s.label} style={{ flex: 1 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>

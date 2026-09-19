@@ -12,7 +12,7 @@ import {
 import { ADVENTURE_THEMES } from "./map-text-stream";
 import { loadCharacters } from "@/lib/character-storage";
 import { loadApiConfigs, loadBindingConfig, resolveBinding, resolveUserIdentity, resolveAuxiliaryApiConfig } from "@/lib/settings-storage";
-import { expandEvent, companionDeclare, resolveRound, rollD100, ROLL_LABELS, formatGameTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
+import { expandEvent, companionDeclare, resolveRound, rollD100, resolveCheckStat, ROLL_LABELS, formatGameTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
 import { STAT_LABELS, ALL_STATS } from "@/lib/map-types";
 import MapRenderer from "./map-renderer";
 import MapTextStream from "./map-text-stream";
@@ -405,6 +405,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         : resolveBinding(bindings, undefined, "adventure");
       const apiConfig = (dmSlot?.apiConfigId ? apiConfigs.find(c => c.id === dmSlot.apiConfigId) : null) || apiConfigs.find(c => c.apiKey) || apiConfigs[0];
       if (!apiConfig?.apiKey) throw new Error("未找到有效的API配置，请先在设置中配置API");
+      // CoC6 SAN backfill for pre-migration saves
+      const playerSan = typeof save.san === "number" ? save.san : (save.playerStats?.san ?? 99);
 
       const companionIds = save.agents
         .filter(a => a.currentNodeId === save.currentNodeId)
@@ -451,6 +453,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         partyStatus: {
           hp: save.hp,
           maxHp: save.maxHp,
+          san: playerSan,
           items: save.director.keyItems,
           playerStats: save.playerStats,
           companions: save.agents
@@ -661,10 +664,12 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       if (ev.gained?.length) updatedDirector.keyItems = [...new Set([...updatedDirector.keyItems, ...ev.gained])];
 
       // Parse lost — HP, stat decreases, and items
-      const statNameMap: Record<string, string> = { 力量: "str", 体质: "con", 敏捷: "dex", 智力: "int", 感知: "per", 魅力: "cha", 运气: "lck" };
+      const statNameMap: Record<string, string> = { 力量: "str", 体质: "con", 意志: "pow", 敏捷: "dex", 外貌: "app", 体型: "siz", 智力: "int", 教育: "edu", 理智: "san", 幸运: "lck", 感知: "int", 魅力: "app" };
       const lossPattern = /^(?:(.+?)[：:])?(.+?)(-\d+)$/;
       const lostItems: string[] = [];
       let hpChange = 0;
+      let sanChange = 0;
+      let newSan = typeof save.san === "number" ? save.san : (save.playerStats?.san ?? 99);
       for (const item of ev.lost || []) {
         const m = item.match(lossPattern);
         if (m && (m[2] === "HP" || m[2] === "hp")) {
@@ -677,6 +682,19 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             updatedAgents = updatedAgents.map(a => {
               const ch = characters.find(c => c.id === a.characterId);
               if (ch?.name === target) return { ...a, hp: Math.max(0, a.hp + delta) };
+              return a;
+            });
+          }
+        } else if (m && (m[2] === "SAN" || m[2] === "san")) {
+          // SAN loss: "SAN-5" or "小雪:SAN-3" (CoC6 sanity)
+          const target = m[1] || "";
+          const delta = parseInt(m[3] || "0");
+          if (!target) {
+            sanChange += delta;
+          } else {
+            updatedAgents = updatedAgents.map(a => {
+              const ch = characters.find(c => c.id === a.characterId);
+              if (ch?.name === target) return { ...a, san: Math.max(0, (typeof a.san === "number" ? a.san : 99) + delta) };
               return a;
             });
           }
@@ -702,6 +720,11 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       // Apply HP change
       const newHp = hpChange ? Math.max(0, save.hp + hpChange) : save.hp;
       if (hpChange) pushMessages({ id: mkId(), type: "system", text: `HP ${hpChange}（${save.hp}→${newHp}）` });
+      // Apply SAN change
+      if (sanChange) {
+        newSan = Math.max(0, newSan + sanChange);
+        pushMessages({ id: mkId(), type: "system", text: `SAN ${sanChange}（理智降至 ${newSan}）` });
+      }
       if (lostItems.length) updatedDirector.keyItems = updatedDirector.keyItems.filter(i => !lostItems.includes(i));
       if (ev.npcsInvolved?.length) updatedDirector.keyNpcsMet = [...new Set([...updatedDirector.keyNpcsMet, ...ev.npcsInvolved])];
 
@@ -790,6 +813,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         currentNodeId: newNodeId,
         currentNodeType: newNodeType,
         hp: newHp,
+        san: newSan,
         playerStats: newPlayerStats,
         agents: updatedAgents,
         director: updatedDirector,
@@ -914,7 +938,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     const growthMessages: string[] = [];
 
     for (const stat of checked) {
-      const current = newStats[stat] || 50;
+      // CoC6 base attributes are 15-105 percentile; growth baseline = 40% of INT (≈skill usage difficulty)
+      const current = newStats[stat] || Math.round(((newStats.int as number) || 50) * 0.4);
       const roll = Math.floor(Math.random() * 100) + 1;
       if (roll > current) {
         // Growth! +1d10
@@ -999,8 +1024,10 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       return;
     }
 
-    const statKey = choice.statCheck.stat;
-    const label = STAT_LABELS[statKey] || statKey;
+    // CoC6: stat_check may carry a CoC skill name (侦查/聆听/图书馆使用/…) — resolve to an attribute
+    const resolved = resolveCheckStat(choice.statCheck.stat);
+    const statKey = resolved.key;
+    const label = resolved.label;
     const rollResults: string[] = [];
 
     // Helper: run dice overlay for one person
@@ -1383,7 +1410,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             {skeleton.world.name}
           </div>
           <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 2 }}>
-            {formatGameTime(save.gameDay, save.gameTime)} · HP {save.hp}/{save.maxHp} · {currentNode?.name}
+            {formatGameTime(save.gameDay, save.gameTime)} · HP {save.hp}/{save.maxHp} · SAN {typeof save.san === "number" ? save.san : (save.playerStats?.san ?? "?")} · {currentNode?.name}
           </div>
         </div>
 
@@ -2416,7 +2443,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                       <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                         {npc && (
                           <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-dim)", lineHeight: 1.4 }}>
-                            <span style={{ color: "var(--c-adv-accent-dim)" }}>💬 {npc.name}</span>
+                            <span style={{ color: "var(--c-adv-accent-dim)" }}>{npc.role === "creature" ? "👁 异象/怪物" : "💬"} {npc.role === "creature" && !npc.name.includes("（异象）") ? "" : npc.name}</span>
                             <span style={{ color: "var(--c-adv-text-muted)", marginLeft: 4 }}>{npc.personality.length > 40 ? npc.personality.slice(0, 40) + "..." : npc.personality}</span>
                           </div>
                         )}
@@ -2540,7 +2567,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                     }}>
                       <div style={{ fontWeight: 500, fontSize: "calc(12px*var(--app-text-scale,1))", color: "var(--c-adv-text)" }}>{name}</div>
                       <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 2 }}>
-                        📍 {nodeName} · HP {a.hp}/{a.maxHp} · ❤️ {a.affinity}
+                        📍 {nodeName} · HP {a.hp}/{a.maxHp} · SAN {typeof a.san === "number" ? a.san : (a.stats?.san ?? "?")} · ❤️ {a.affinity}
                       </div>
                       <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 1 }}>
                         {ALL_STATS.map(k => `${STAT_LABELS[k]}${a.stats?.[k] ?? "?"}`).join(" ")}
