@@ -19,7 +19,8 @@ function rollRaw(kind: "3d6" | "2d6p6" | "3d6p3"): number {
   if (kind === "3d6p3") return d6() + d6() + d6() + 3;
   return d6() + d6() + d6();
 }
-function rollCoC6Base(): Pick<CharStats, "str" | "con" | "pow" | "dex" | "app" | "siz" | "int" | "edu"> {
+function rollBase(edition: "coc6" | "coc7"): Pick<CharStats, "str" | "con" | "pow" | "dex" | "app" | "siz" | "int" | "edu"> {
+  const eduKind = edition === "coc7" ? "2d6p6" : "3d6p3";  // 7th: EDU = 2D6+6
   return {
     str: rollRaw("3d6") * 5,
     con: rollRaw("3d6") * 5,
@@ -28,16 +29,18 @@ function rollCoC6Base(): Pick<CharStats, "str" | "con" | "pow" | "dex" | "app" |
     app: rollRaw("3d6") * 5,
     siz: rollRaw("2d6p6") * 5,
     int: rollRaw("2d6p6") * 5,
-    edu: rollRaw("3d6p3") * 5,
+    edu: rollRaw(eduKind) * 5,
   };
 }
-function rollStats(): CharStats {
-  const base = rollCoC6Base();
+function rollStats(edition: "coc6" | "coc7" = "coc6"): CharStats {
+  const base = rollBase(edition);
   return { ...base, san: base.pow, lck: rollRaw("3d6") * 5 };
 }
-/** Max HP from percent-scale CON/SIZ: ceil((CON/5 + SIZ/5) / 2) — same as CoC6 formula on raw values. */
-export function maxHpFromStats(stats: CharStats): number {
-  return Math.ceil((stats.con / 5 + stats.siz / 5) / 2);
+/** Max HP from percent-scale CON/SIZ. 6th: ceil((CON+SIZ)/10); 7th: floor((CON+SIZ)/10). */
+export function maxHpFromStats(stats: CharStats, edition: "coc6" | "coc7" = "coc6"): number {
+  return edition === "coc7"
+    ? Math.max(1, Math.floor((stats.con + stats.siz) / 10))
+    : Math.max(1, Math.ceil((stats.con + stats.siz) / 10));
 }
 /** MP from percent-scale POW: floor(POW / 25). */
 export function maxMpFromStats(stats: CharStats): number {
@@ -48,8 +51,8 @@ export function dbFromStats(stats: CharStats): string {
   return lookupDB(stats.str / 5 + stats.siz / 5);
 }
 /** Roll stats with personality-based adjustments (±10 percentiles on base attributes) */
-function rollStatsFromPersonality(p: string): CharStats {
-  const base = rollStats();
+function rollStatsFromPersonality(p: string, edition: "coc6" | "coc7" = "coc6"): CharStats {
+  const base = rollStats(edition);
   const boost = (keywords: string[]) => keywords.some(k => p.includes(k)) ? 10 : 0;
   const nerf = (keywords: string[]) => keywords.some(k => p.includes(k)) ? -10 : 0;
   const clamp = (v: number) => Math.max(15, Math.min(99, v));
@@ -221,10 +224,10 @@ export function deleteSave(id: string): void {
 
 // ── New Game State ──
 
-export function createInitialSave(worldId: string, startNodeId: string): GameSave {
+export function createInitialSave(worldId: string, startNodeId: string, edition: "coc6" | "coc7" = "coc6"): GameSave {
   const now = new Date().toISOString();
-  const stats = rollStats();
-  const maxHp = Math.max(1, maxHpFromStats(stats));
+  const stats = rollStats(edition);
+  const maxHp = Math.max(1, maxHpFromStats(stats, edition));
   return {
     id: `save_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     worldId,
@@ -237,7 +240,7 @@ export function createInitialSave(worldId: string, startNodeId: string): GameSav
     maxHp,
     san: Math.min(stats.san, 99),
     playerStats: stats,
-    playerSheet: buildCoCSheet(stats),
+    playerSheet: buildCoCSheet(stats, undefined, undefined, edition),
     checkedSkills: [],
     agents: [],
     mainQuestStage: 0,
@@ -259,11 +262,11 @@ export function createInitialSave(worldId: string, startNodeId: string): GameSav
 }
 
 /** Add a character agent to a save */
-export function addAgentToSave(save: GameSave, characterId: string, personality: string): GameSave {
+export function addAgentToSave(save: GameSave, characterId: string, personality: string, edition: "coc6" | "coc7" = "coc6"): GameSave {
   if (save.agents.some(a => a.characterId === characterId)) return save;
   const p = personality.toLowerCase();
-  const stats = rollStatsFromPersonality(p);
-  const maxHp = Math.max(1, maxHpFromStats(stats));
+  const stats = rollStatsFromPersonality(p, edition);
+  const maxHp = Math.max(1, maxHpFromStats(stats, edition));
   const agent: CharacterAgent = {
     characterId,
     currentNodeId: save.currentNodeId,  // starts at user's location
@@ -278,7 +281,7 @@ export function addAgentToSave(save: GameSave, characterId: string, personality:
     journal: [],
     affinity: 15,
     stats,
-    sheet: buildCoCSheet(stats, personality),
+    sheet: buildCoCSheet(stats, personality, undefined, edition),
   };
   return { ...save, agents: [...save.agents, agent] };
 }

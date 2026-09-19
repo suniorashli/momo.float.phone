@@ -70,6 +70,8 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   // KP narration style (per world) — injected into scene/resolve prompts
   const [kpNarrStyle, setKpNarrStyle] = useState("");
   const [kpArtStyle, setKpArtStyle] = useState("");
+  // Rules edition (per world) — CoC 6th/7th, chosen at creation; old worlds stay coc6 (fork)
+  const [rulesEdition, setRulesEdition] = useState<"coc6" | "coc7">("coc6");
   // TRPG module background text (imported from txt) — injected into world-gen prompt
   const [moduleText, setModuleText] = useState("");
   const [moduleName, setModuleName] = useState("");
@@ -215,8 +217,9 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
     setMode("list");
     setIsGenerating(false);
 
-    // 2. Capture selected chars for save creation later
+    // 2. Capture selected chars + rules edition for save creation later
     const charIdsSnapshot = [...selectedCharIds];
+    const edition = rulesEdition;
 
     // 3. Generate in background
     try {
@@ -255,21 +258,23 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         createdAt: now,
         updatedAt: new Date().toISOString(),
       };
-      // Persist KP narration style into the world skeleton lore prefix (fork: per-world KP style)
-      if (kpStyleInstruction) {
-        world.skeleton = {
-          ...world.skeleton,
-          world: { ...world.skeleton.world, lore: `${world.skeleton.world.lore}\n\n【KP风格指令】${kpStyleInstruction}` },
-        };
-      }
+      // Persist KP narration style + rules edition into the world skeleton (fork: per-world)
+      world.skeleton = {
+        ...world.skeleton,
+        world: {
+          ...world.skeleton.world,
+          rulesEdition: edition,
+          lore: kpStyleInstruction ? `${world.skeleton.world.lore}\n\n【KP风格指令】${kpStyleInstruction}` : world.skeleton.world.lore,
+        },
+      };
       saveMapWorld(world);
 
       // 5. Create initial save with selected characters
       const startNode = renderedMap.l1Nodes[0]?.id || "l1_0";
-      let save = createInitialSave(world.id, startNode);
+      let save = createInitialSave(world.id, startNode, edition);
       for (const cid of charIdsSnapshot) {
         const ch = characters.find(c => c.id === cid);
-        save = addAgentToSave(save, cid, ch?.personality || "");
+        save = addAgentToSave(save, cid, ch?.personality || "", edition);
       }
       const startRegionIdx = 0;
       const discovered: string[] = [startNode];
@@ -294,7 +299,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
 
   // ── Enter World (skip character selection, go straight in) ──
   const handleEnterWorld = (world: MapWorld) => {
-    const save = getLatestSave(world.id) || createInitialSave(world.id, world.renderedMap.l1Nodes[0]?.id || "l1_0");
+    const save = getLatestSave(world.id) || createInitialSave(world.id, world.renderedMap.l1Nodes[0]?.id || "l1_0", world.skeleton.world.rulesEdition || "coc6");
     onStartGame(world, save);
   };
 
@@ -587,6 +592,35 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                   模组将作为世界生成的背景设定：NPC、怪物、地点、主线会优先取自模组内容（超长文件自动截取前 12000 字，建议大模组自行切割）
                 </div>
               )}
+            </div>
+
+            {/* ── Rules edition (CoC 6th / 7th) ── */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(200,160,100,0.5)", marginBottom: 7, letterSpacing: "0.08em" }}>
+                规则版本
+              </div>
+              <div style={{ display: "flex", gap: 5 }}>
+                {([["coc6", "COC 6版（经典）"], ["coc7", "COC 7版"]] as const).map(([val, t]) => {
+                  const active = rulesEdition === val;
+                  return (
+                    <button key={val} className="tome-seal"
+                      onClick={() => setRulesEdition(val)}
+                      style={{
+                        flex: 1, padding: "8px 4px", borderRadius: 6,
+                        border: `1px solid ${active ? "rgba(200,160,100,0.45)" : "rgba(200,160,100,0.1)"}`,
+                        background: active ? "linear-gradient(135deg, rgba(200,160,100,0.18), rgba(200,160,100,0.08))" : "rgba(0,0,0,0.3)",
+                        color: active ? "#e8d0a0" : "rgba(255,255,255,0.35)",
+                        fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                        transition: "all 0.2s ease",
+                      }}>
+                      {t}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.25)", marginTop: 5, lineHeight: 1.5 }}>
+                7版规则：技能基础值按7版、闪避=敏捷÷2、难度分级（困难÷2/极难÷5）、奖励骰/惩罚骰、幸运补值、EDU=2D6+6。仅对新世界生效，旧世界保持6版
+              </div>
             </div>
 
             {/* ── Divider ── */}

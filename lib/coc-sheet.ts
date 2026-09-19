@@ -3,11 +3,13 @@
 // dice math and combat resolution helpers. (fork mod — kept standalone so merging
 // upstream map-* files stays easy)
 
-import type { CharStats, StatKey } from "./map-types";
+import type { CharStats, StatKey, RulesEdition } from "./map-types";
 import { lookupDB, SKILL_STAT_HINT } from "./map-types";
 
-// ── Skill base values (CoC6) ──
-export const SKILL_BASE: Record<string, number> = {
+export type { RulesEdition };
+
+// ── Skill base values: CoC 6th ──
+export const SKILL_BASE_6: Record<string, number> = {
   拳击: 50, 踢击: 25, 头槌: 10, 擒抱: 25, 小刀: 25, 棍棒: 25, 手枪: 20, 步枪: 25, 霰弹枪: 30, 冲锋枪: 15, 投掷: 25,
   侦查: 25, 聆听: 25, 潜行: 15, 藏匿: 15, 追踪: 10, 导航: 10,
   议价: 5, 话术: 5, 说服: 15, 心理学: 5, 信用评级: 0,
@@ -15,6 +17,77 @@ export const SKILL_BASE: Record<string, number> = {
   "艺术/手艺": 5, "驾驶（汽车）": 20, 电气维修: 10, 机械维修: 20, 操作重型机械: 1, 计算机使用: 0, 电子学: 1, 摄影: 5, 锁匠: 1, 妙手: 10, 伪装: 1,
   外语: 1, 急救: 30, 游泳: 25, 攀爬: 40, 跳跃: 25, 骑术: 5, 生存: 10,
 };
+
+// Legacy alias kept for old imports (must come after SKILL_BASE_6 — no TDZ)
+export const SKILL_BASE: Record<string, number> = SKILL_BASE_6;
+
+// ── Skill base values: CoC 7th (per user's coc7th.json) ──
+export const SKILL_BASE_7: Record<string, number> = {
+  拳击: 25, 踢击: 25, 头槌: 25, 擒抱: 25, 小刀: 25, 棍棒: 25, 手枪: 20, 步枪: 25, 霰弹枪: 25, 冲锋枪: 15, 投掷: 20,
+  侦查: 25, 聆听: 20, 潜行: 20, 藏匿: 20, 追踪: 10, 导航: 10,
+  议价: 5, 话术: 5, 说服: 10, 心理学: 10, 信用评级: 0, 取悦: 15, 恐吓: 15, 估价: 5,
+  会计: 5, 人类学: 1, 考古学: 1, 历史: 5, 法律: 5, 图书馆使用: 20, 医学: 1, 博物学: 10, 神秘学: 5, 精神分析: 1, 科学: 1, 克苏鲁神话: 0,
+  "艺术/手艺": 5, "驾驶（汽车）": 20, 电气维修: 10, 机械维修: 10, 操作重型机械: 1, 计算机使用: 5, 电子学: 1, 摄影: 5, 锁匠: 1, 妙手: 10, 伪装: 5,
+  外语: 1, 急救: 30, 游泳: 20, 攀爬: 20, 跳跃: 20, 骑术: 5, 生存: 10,
+};
+
+export function skillBaseTable(edition: RulesEdition): Record<string, number> {
+  return edition === "coc7" ? SKILL_BASE_7 : SKILL_BASE_6;
+}
+
+/** Dodge value: 6th = DEX% × 0.4; 7th = DEX / 2 (percent). Both take percent DEX. */
+export function dodgeValue(dex: number, edition: RulesEdition): number {
+  return edition === "coc7" ? Math.floor(dex / 2) : Math.round(dex * 0.4);
+}
+
+/** Max HP: 7th = floor((CON+SIZ)/10) on percent values; 6th = ceil((CON+SIZ)/10). */
+export function maxHpFor(edition: RulesEdition, con: number, siz: number): number {
+  if (edition === "coc7") return Math.max(1, Math.floor((con + siz) / 10));
+  return Math.max(1, Math.ceil((con + siz) / 10));
+}
+
+/** Fumble threshold: 7th = 96-100 when value < 50, else only 100; 6th = 96-100 always. */
+export function fumbleThreshold(edition: RulesEdition, value: number): number {
+  if (edition === "coc7") return value < 50 ? 96 : 100;
+  return 96;
+}
+
+/** 7th Edition bonus/penalty dice: two D100s, keep lower (bonus) or higher (penalty). */
+export function rollD100WithDice(value: number, mode: "none" | "bonus" | "penalty", edition: RulesEdition): { roll: number; level: "crit" | "hard" | "success" | "fail" | "fumble"; detail: string } {
+  const rand = () => Math.floor(Math.random() * 100) + 1;
+  let roll = rand();
+  let detail = "";
+  if (edition === "coc7" && mode !== "none") {
+    const second = rand();
+    roll = mode === "bonus" ? Math.min(roll, second) : Math.max(roll, second);
+    detail = mode === "bonus" ? `奖励骰（取低：${roll}）` : `惩罚骰（取高：${roll}）`;
+  }
+  if (roll <= Math.floor(value / 5)) return { roll, level: "crit", detail };
+  if (roll <= Math.floor(value / 2)) return { roll, level: "hard", detail };
+  if (roll <= value) return { roll, level: "success", detail };
+  if (edition === "coc7" ? roll >= fumbleThreshold(edition, value) : roll > 95) return { roll, level: "fumble", detail };
+  return { roll, level: "fail", detail };
+}
+
+/** 7th Edition DB by STR+SIZ (percent). 6th uses raw (÷5) table. */
+export function dbForEdition(edition: RulesEdition, str: number, siz: number): string {
+  if (edition === "coc6") return lookupDB(Math.round(str / 5) + Math.round(siz / 5));
+  const sum = str + siz;
+  if (sum <= 64) return "-2";
+  if (sum <= 84) return "-1";
+  if (sum <= 124) return "0";
+  if (sum <= 164) return "+1D4";
+  if (sum <= 204) return "+1D6";
+  const extra = Math.ceil((sum - 204) / 80);
+  return `+${1 + extra}D6`;
+}
+
+/** Luck spend (7th): burn luck to turn a near-miss into success. */
+export function canSpendLuck(roll: number, value: number, luck: number): { ok: boolean; cost: number } {
+  if (roll <= value) return { ok: false, cost: 0 };
+  const diff = roll - value;
+  return { ok: diff > 0 && diff <= luck, cost: diff };
+}
 
 export type WeaponSpec = {
   name: string;        // 显示名
@@ -88,32 +161,33 @@ export type CharSheet = {
 
 const rand = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
 
-/** Build a full CoC6 sheet: occupation (auto or forced), point allocation, default gear.
- *  stats are percent-scale CoC6 attributes. */
-export function buildCoCSheet(stats: CharStats, personality?: string, forcedOccupation?: string): CharSheet {
+/** Build a full CoC sheet (6th/7th): occupation (auto or forced), point allocation, default gear.
+ *  stats are percent-scale attributes. */
+export function buildCoCSheet(stats: CharStats, personality?: string, forcedOccupation?: string, edition: RulesEdition = "coc6"): CharSheet {
   const occ = forcedOccupation
     ? OCCUPATIONS.find(o => o.name === forcedOccupation) || detectOccupation(personality || "")
     : detectOccupation(personality || "");
 
+  const BASE = skillBaseTable(edition);
   const skills: Record<string, number> = {};
-  const rawEdu = Math.round(stats.edu / 5);
-  const rawInt = Math.round(stats.int / 5);
-  let occPoints = rawEdu * 20;   // 职业点 EDU×20
-  let intPoints = rawInt * 10;   // 兴趣点 INT×10
+  // 6th: occPoints = EDU(raw)×20 ≡ EDU%×4; 7th: EDU×4 — identical on percent scale.
+  // Interest: 6th INT(raw)×10 ≡ INT%×2; 7th INT×2 — same.
+  let occPoints = Math.round(stats.edu * 4);
+  let intPoints = Math.round(stats.int * 2);
 
   // 本职技能加点：前3个技能是主修（拿60%点数），其余平分
   const occSkills = occ.skills.slice(0, 8);
   const major = occSkills.slice(0, 3);
   const minor = occSkills.slice(3);
   for (const s of major) {
-    const base = SKILL_BASE[s] ?? 0;
+    const base = BASE[s] ?? 0;
     const spend = Math.min(Math.max(0, 99 - base), Math.round(occPoints * 0.2 + rand(-5, 10)));
     skills[s] = base + spend;
     occPoints -= spend;
   }
   for (const s of minor) {
-    if (occPoints <= 0) { if (!(s in skills)) skills[s] = SKILL_BASE[s] ?? 0; continue; }
-    const base = SKILL_BASE[s] ?? 0;
+    if (occPoints <= 0) { if (!(s in skills)) skills[s] = BASE[s] ?? 0; continue; }
+    const base = BASE[s] ?? 0;
     const spend = Math.min(Math.max(0, 99 - base), Math.max(5, Math.round(occPoints / Math.max(1, minor.length))));
     skills[s] = base + spend;
     occPoints -= spend;
@@ -124,7 +198,7 @@ export function buildCoCSheet(stats: CharStats, personality?: string, forcedOccu
     .filter(s => !occSkills.includes(s));
   const picks = interestPool.sort(() => Math.random() - 0.5).slice(0, 4);
   for (const s of picks) {
-    const base = SKILL_BASE[s] ?? 0;
+    const base = BASE[s] ?? 0;
     const spend = Math.min(Math.max(0, 99 - base), Math.max(5, Math.round(intPoints / picks.length)));
     skills[s] = base + spend;
     intPoints -= spend;
@@ -140,13 +214,15 @@ export function buildCoCSheet(stats: CharStats, personality?: string, forcedOccu
   return { occupation: occ.name, creditRating: credit, skills, weapons, equipment: [...occ.equipment] };
 }
 
-/** Resolve a check target to a concrete value: trained skill → base skill → attribute mapping. */
-export function skillCheckValue(sheet: CharSheet | undefined, name: string, stats: CharStats): { value: number; source: string } {
+/** Resolve a check target to a concrete value: trained skill → base skill → attribute mapping.
+ *  edition affects dodge & native-language bases. */
+export function skillCheckValue(sheet: CharSheet | undefined, name: string, stats: CharStats, edition: RulesEdition = "coc6"): { value: number; source: string } {
   const n = (name || "").trim();
-  if (n === "闪避") return { value: Math.round(stats.dex * 2), source: "闪避" };
-  if (n === "母语") return { value: Math.round(stats.edu * 5), source: "母语" };
+  const BASE = skillBaseTable(edition);
+  if (n === "闪避") return { value: dodgeValue(stats.dex, edition), source: "闪避" };
+  if (n === "母语") return { value: edition === "coc7" ? stats.edu : Math.round(stats.edu * 5), source: "母语" };
   if (sheet?.skills && typeof sheet.skills[n] === "number") return { value: sheet.skills[n], source: n };
-  if (typeof SKILL_BASE[n] === "number") return { value: SKILL_BASE[n], source: `${n}(基础)` };
+  if (typeof BASE[n] === "number") return { value: BASE[n], source: `${n}(基础)` };
   // attribute keys / legacy
   const attr: Record<string, StatKey> = { str: "str", con: "con", pow: "pow", dex: "dex", app: "app", siz: "siz", int: "int", edu: "edu", san: "san", lck: "lck", per: "int", cha: "app", 力量: "str", 体质: "con", 意志: "pow", 敏捷: "dex", 外貌: "app", 体型: "siz", 智力: "int", 教育: "edu", 理智: "san", 幸运: "lck", 感知: "int", 魅力: "app" };
   const lower = n.toLowerCase();

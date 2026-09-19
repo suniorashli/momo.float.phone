@@ -2,7 +2,7 @@
 // RPG Map Mode — LLM integration for world generation + event expansion
 // Fork mods: CoC/CoJ-style TRPG mode (CoC 6th Ed. attributes, module import, sparse NPC worlds)
 
-import type { WorldSkeleton, WorldSkeletonInput, EventScene, GameSave, WorldNPC, QuestLine, EncounterSeed, CharacterAgent, AgentDecision, RichRegion, Declaration, CharStats } from "./map-types";
+import type { WorldSkeleton, WorldSkeletonInput, EventScene, GameSave, WorldNPC, QuestLine, EncounterSeed, CharacterAgent, AgentDecision, RichRegion, Declaration, CharStats, RulesEdition } from "./map-types";
 import { STAT_LABELS, ALL_STATS, SKILL_STAT_HINT } from "./map-types";
 import { simpleLLMCall } from "./api-helpers";
 import { previewMessagesForApi, sendLLMRequest } from "./chat-engine";
@@ -577,6 +577,10 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 - narration 必须按自然段分段书写。场景变化、人物动作、气氛描写、结果揭示之间要换段。
 - 在 narration 字符串内部使用 \\n\\n 表示空行换段，不要把整段旁白挤成一整块。
 
+【叙述过程·强规则】
+- 任何行动或检定的结果揭晓前，narration 必须先用 2-3 段描写过程：调查员如何动手、环境如何反应、气氛如何变化
+- 禁止跳步：不要一句话直接给结果（如「你找到了日记」）。过程在先，结果在后。
+
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
@@ -638,6 +642,8 @@ export type DMContext = {
   madness?: { temporary?: { rounds: number; symptom: string }; permanent?: boolean };
   // Fork: KP narration style instruction (extracted from world lore 【KP风格指令】 block)
   kpStyle?: string;
+  // Fork: CoC rules edition (6th/7th) — affects KP rule card wording & dice math
+  rulesEdition?: RulesEdition;
 };
 
 /** Truncate an array of strings from the oldest, keeping newest within token budget */
@@ -732,6 +738,16 @@ ${(ctx.mainQuestStages || []).map((s, i) => {
     : ctx.pacing === "fast" ? "\n叙事节奏：紧凑（积极推进主线，每个场景都往前赶。每个主线阶段经过5-6轮互动就可以advance=true）"
     : "\n叙事节奏：适中（每个主线阶段经过10-12轮互动后再设advance=true，平衡推进和探索）";
 
+  // Fork: edition-specific KP rule card (7th: difficulty tiers, natural-1 crit, bonus/penalty dice, luck spend, pushed rolls)
+  const is7 = ctx.rulesEdition === "coc7";
+  const ruleExtra7 = is7 ? `\n【7版判定细则】
+- 难度分级：常规≤技能值 / 困难≤÷2 / 极难≤÷5——系统掷骰时自动标注成功等级
+- 大成功=天然骰出1；大失败：技能值<50时为96-100，≥50时仅100
+- 闪避值=敏捷÷2；奖励骰/惩罚骰由玩家在掷骰时选择、系统自动掷（两粒D100取低/取高），对话流会标注
+- 幸运补值：检定差一点成功时玩家可扣幸运值补足——流里标【幸运补值成功】的检定按成功处理
+- 推动检定：一次检定失败后，玩家若能说明新的做法或理由，可重试一次（代价由你裁定：时间、噪音、SAN等）
+- SAN损失可写两段式："SAN-1/1D6"（系统掷理智检定：成功扣前者，失败扣后者），固定值"SAN-5"仍可用` : "";
+
   return `# 世界：${ctx.worldLore}
 ${ctx.kpStyle ? `\n【叙述风格指令】（KP必须遵守）\n${ctx.kpStyle}\n` : ""}${mapBlock}
 ${dmBlock}${dirBlock}${questBlock}${pacingHint}
@@ -759,7 +775,7 @@ ${ctx.partyStatus ? `HP：${ctx.partyStatus.hp}/${ctx.partyStatus.maxHp}${typeof
 玩家技能：${ctx.partyStatus.playerSheet ? Object.entries(ctx.partyStatus.playerSheet.skills).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => `${k}${v}`).join("/") : "无"}
 ${ctx.partyStatus.companions.map(c => `${c.name}：${c.sheet?.occupation || "调查员"} 好感${c.affinity} HP${"?"} ${formatStats(c.stats)}${c.sheet?.weapons?.length ? ` 武器:${c.sheet.weapons.map(w => `${w.name}(${w.damage})`).join("、")}` : ""}${c.status ? ` [${c.status}]` : ""}`).join("；")}` : "无数据"}
 
-# 规则（COC第6版）
+# 规则（COC${is7 ? "7" : "6"}版）${ruleExtra7}
 属性（百分值）：力量str/体质con/意志pow/敏捷dex/外貌app/体型siz/智力int/教育edu/理智san/幸运lck。属性成长由系统自动处理，DM不要在gained里加属性。
 HP：生命值，由体质与体型决定。DM根据剧情在lost里扣HP，格式"HP-15"（玩家）或"小雪:HP-10"（角色）。
 SAN：理智值（0-99）。目睹恐怖、阅读禁书、直面神话存在都会扣SAN，格式"SAN-5"（玩家）或"小雪:SAN-3"（角色）。
@@ -1191,6 +1207,11 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是COC跑团的守秘人（KP）。
 - narration 必须按自然段分段书写。场景变化、人物动作、气氛描写、结果揭示之间要换段。
 - 在 narration 字符串内部使用 \\n\\n 表示空行换段，不要把整段旁白挤成一整块。
 
+【叙述过程·强规则】
+- 本轮宣言的裁定必须先有过程：narration 用 2-3 段描写每位调查员如何行动、环境与 NPC 如何反应，最后才揭示各自的结果
+- 禁止跳步：不要「某人成功了，拿到了线索」式的直陈结果。过程在先，结果在后
+- 掷骰结果已由系统给出，按结果演出即可——但演出要丰满，不能因为结果已定就省略过程描写
+
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
@@ -1282,8 +1303,16 @@ export async function resolveRound(
 
 /** Check if a stat check passes */
 /** d100 roll against a stat value (CoC-style) */
-export function rollD100(statValue: number): { roll: number; level: "crit" | "hard" | "success" | "fail" | "fumble" } {
+export function rollD100(statValue: number, edition: "coc6" | "coc7" = "coc6"): { roll: number; level: "crit" | "hard" | "success" | "fail" | "fumble" } {
   const roll = Math.floor(Math.random() * 100) + 1; // 1-100
+  if (edition === "coc7") {
+    // 7th: crit = natural 1; fumble = 96-100 (<50) / 100 (≥50); difficulty tiers by value
+    if (roll === 1) return { roll, level: "crit" };                           // 大成功（天然1）
+    if (roll <= Math.floor(statValue / 2)) return { roll, level: "hard" };     // 困难成功
+    if (roll <= statValue) return { roll, level: "success" };                   // 成功
+    if (roll >= (statValue < 50 ? 96 : 100)) return { roll, level: "fumble" };  // 大失败
+    return { roll, level: "fail" };                                              // 失败
+  }
   if (roll <= Math.floor(statValue / 5)) return { roll, level: "crit" };     // 极难成功（大成功）
   if (roll <= Math.floor(statValue / 2)) return { roll, level: "hard" };     // 困难成功
   if (roll <= statValue) return { roll, level: "success" };                   // 成功

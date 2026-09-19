@@ -13,7 +13,7 @@ import { ADVENTURE_THEMES } from "./map-text-stream";
 import { loadCharacters } from "@/lib/character-storage";
 import { loadApiConfigs, loadBindingConfig, resolveBinding, resolveUserIdentity, resolveAuxiliaryApiConfig } from "@/lib/settings-storage";
 import { expandEvent, companionDeclare, resolveRound, rollD100, resolveCheckStat, ROLL_LABELS, formatGameTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
-import { skillCheckValue, resolveAttack, rollExpr, dbFromStats, findWeaponMention, LEVEL_LABEL, sanityLossVerdict, rollTemporaryMadness, buildInitiative, makeHostile, type RollLevel, type HostileCombatant } from "@/lib/coc-sheet";
+import { skillCheckValue, resolveAttack, rollExpr, dbFromStats, findWeaponMention, LEVEL_LABEL, sanityLossVerdict, rollTemporaryMadness, buildInitiative, makeHostile, canSpendLuck, rollD100WithDice, type RollLevel, type HostileCombatant } from "@/lib/coc-sheet";
 import { STAT_LABELS, ALL_STATS } from "@/lib/map-types";
 import MapRenderer from "./map-renderer";
 import MapTextStream from "./map-text-stream";
@@ -183,6 +183,9 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   }, []);
 
   const { renderedMap, skeleton } = world;
+  // Fork: rules edition — 7th edition worlds get difficulty tiers / bonus-penalty dice / luck spend (old worlds = 6th)
+  const is7th = skeleton.world.rulesEdition === "coc7";
+  const [diceMode, setDiceMode] = useState<"none" | "bonus" | "penalty">("none");
   const characters = useMemo(() => loadCharacters(), []);
   const userIdentity = useMemo(() => {
     if (save.agents.length === 1) {
@@ -469,6 +472,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         sideQuestStatus: sqStatus,
         mainQuestNodeMap: mqNodeMap,
         kpStyle: (skeleton.world.lore.match(/【KP风格指令】([\s\S]*)/)?.[1] || "").trim() || undefined,
+        rulesEdition: skeleton.world.rulesEdition || "coc6",
         partyStatus: {
           hp: save.hp,
           maxHp: save.maxHp,
@@ -628,7 +632,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             if (decl.skillCheck && declAgent) {
               const edition2 = is7th ? "coc7" as const : "coc6" as const;
               const check = skillCheckValue(declAgent.sheet, decl.skillCheck, declAgent.stats, edition2);
-              const rollR = rollD100(check.value);
+              const rollR = rollD100(check.value, edition2);
               const rLabel = rollR.level === "crit" ? "大成功" : rollR.level === "hard" ? "困难成功" : rollR.level === "success" ? "成功" : rollR.level === "fumble" ? "大失败" : "失败";
               const declRollMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${decl.speaker} · ${decl.action}（${check.source} ${check.value}）`, text: `D100 = ${rollR.roll} → ${rLabel}`, emotion: rollR.level === "success" || rollR.level === "hard" || rollR.level === "crit" ? "success" : "fail" };
               pushMessages(declRollMsg);
@@ -737,6 +741,28 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       let sanChange = 0;
       let newSan = typeof save.san === "number" ? save.san : (save.playerStats?.san ?? 99);
       for (const item of ev.lost || []) {
+        // Fork 7th ed: two-tier SAN loss "SAN-1/1D6" (or "角色名:SAN-1/1D6") — roll a sanity check to pick the loss
+        const san2 = item.match(/^(?:([^：:]+)[：:])?\s*SAN-(\d+)\/(\d*D\d+)$/i);
+        if (san2) {
+          const target2 = (san2[1] || "").trim();
+          const succLoss = parseInt(san2[2], 10);
+          const failExpr2 = san2[3];
+          const sanCheckVal = Math.min(99, typeof save.san === "number" ? save.san : (save.playerStats?.san ?? 99));
+          const chk = rollD100(sanCheckVal, is7th ? "coc7" : "coc6");
+          const pass = chk.level !== "fail" && chk.level !== "fumble";
+          const lost2 = pass ? succLoss : rollExpr(failExpr2, "0").total;
+          pushMessages({ id: mkId(), type: "system", text: `🧠 理智检定 D100=${chk.roll}（SAN ${sanCheckVal}）→ ${pass ? "成功" : "失败"} → ${target2 ? `${target2}:` : ""}SAN-${lost2}` });
+          if (!target2) {
+            sanChange -= lost2;
+          } else {
+            updatedAgents = updatedAgents.map(a => {
+              const ch = characters.find(c => c.id === a.characterId);
+              if (ch?.name === target2) return { ...a, san: Math.max(0, (typeof a.san === "number" ? a.san : 99) - lost2) };
+              return a;
+            });
+          }
+          continue;
+        }
         const m = item.match(lossPattern);
         if (m && (m[2] === "HP" || m[2] === "hp")) {
           // HP loss: "HP-15" or "小雪:HP-10"
@@ -1001,7 +1027,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         }
       }
     }
-  }, [eventContext, accumulatedEvent, save, currentNode, activeEventMeta, persistSave, allNodes, characters, pushMessages, pushSceneToStream, userIdentity, skeleton]);
+  }, [eventContext, accumulatedEvent, save, currentNode, activeEventMeta, persistSave, allNodes, characters, pushMessages, pushSceneToStream, userIdentity, skeleton, is7th]);
 
   // ── Growth roll ref (defined below, used by handlePlayerAction) ──
   const runGrowthRollRef = useRef<(s: GameSave, skills?: string[]) => GameSave>((s) => s);
@@ -1148,7 +1174,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       ...save.agents.map(a => ({ name: charName(a.characterId), val: skillCheckValue(a.sheet, skillName, a.stats).value, isPlayer: false })),
     ];
     const best = [...candidates].sort((a, b) => b.val - a.val)[0];
-    const r = rollD100(best.val);
+    const r = rollD100(best.val, is7th ? "coc7" : "coc6");
     const levelLabel = r.level === "crit" ? "大成功" : r.level === "hard" ? "困难成功" : r.level === "success" ? "成功" : r.level === "fumble" ? "大失败" : "失败";
     const success = r.level !== "fail" && r.level !== "fumble";
 
@@ -1187,7 +1213,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     const msg: StreamMessage = { id: mkId(), type: "roll", speaker: `🤝 ${skillName} · ${best.name}（${skillName}${best.val}）`, text: `D100 = ${r.roll} → ${levelLabel} → ${effectText}`, emotion: success ? "success" : "fail" };
     pushMessages(msg);
     streamRef.current = [...streamRef.current, msg];
-  }, [save, persistSave, pushMessages, userIdentity, characters]);
+  }, [save, persistSave, pushMessages, userIdentity, characters, is7th]);
 
   // ── Handle event exit — send as player action so DM knows ──
   const handleEventExit = useCallback(async () => {
@@ -1256,7 +1282,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     const rollResults: string[] = [];
 
     // Helper: run dice overlay for one person
-    const rollFor = async (name: string, statValue: number, isPlayer: boolean): Promise<{ roll: number; level: string }> => {
+    const rollFor = async (name: string, statValue: number, isPlayer: boolean): Promise<{ roll: number; level: string; detail?: string }> => {
       setDiceOverlay({ name, stat: statKey, statValue, context: choice.label, label, isPlayer });
       setDiceNumber(0);
       setDiceRolling(false);
@@ -1271,11 +1297,11 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       }
 
       setDiceRolling(true);
-      return new Promise<{ roll: number; level: string }>(resolve => {
+      return new Promise<{ roll: number; level: string; detail?: string }>(resolve => {
         const interval = setInterval(() => setDiceNumber(Math.floor(Math.random() * 100) + 1), 80);
         setTimeout(() => {
           clearInterval(interval);
-          const r = rollD100(statValue);
+          const r = is7th && diceMode !== "none" ? rollD100WithDice(statValue, diceMode, "coc7") : rollD100(statValue, is7th ? "coc7" : "coc6");
           setDiceNumber(r.roll);
           setDiceRolling(false);
           setTimeout(() => { setDiceOverlay(null); setDiceNumber(0); resolve(r); }, 1200);
@@ -1332,7 +1358,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     const result = await rollFor(chosen.name, chosen.statValue, chosen.isPlayer);
     const success = result.level !== "fail" && result.level !== "fumble";
     const levelLabel = result.level === "crit" ? "大成功！" : result.level === "hard" ? "困难成功" : result.level === "success" ? "成功" : result.level === "fumble" ? "大失败！" : "失败";
-    const rollMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${chosen.name} · ${choice.label}（${label} ${chosen.statValue}）`, text: `D100 = ${result.roll} → ${levelLabel}`, emotion: success ? "success" : "fail" };
+    const rollMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${chosen.name} · ${choice.label}（${label} ${chosen.statValue}）`, text: `D100 = ${result.roll}${result.detail ? ` ${result.detail}` : ""} → ${levelLabel}`, emotion: success ? "success" : "fail" };
     pushMessages(rollMsg);
 
     // CoC6 combat: weapon-skill checks auto-resolve damage (attack vs dodge, DB applied)
@@ -1360,7 +1386,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
     // Proceed — skip display since roll messages already shown
     handlePlayerAction(choice.label, true);
-  }, [handlePlayerAction, save, characters, userIdentity, pushMessages, persistSave]);
+  }, [handlePlayerAction, save, characters, userIdentity, pushMessages, persistSave, is7th, diceMode]);
 
   // ── Handle free text input ──
   const handleFreeInput = useCallback(() => {
@@ -1413,14 +1439,17 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     setFreeText("");
     setFreeAction("");
     setCheckSkill("");
+    setDiceMode("none");
     if (skill) {
       // Roll the player's chosen skill immediately, then continue as a declaration
       const edition = is7th ? "coc7" as const : "coc6" as const;
       const check = skillCheckValue(save.playerSheet, skill, save.playerStats, edition);
-      const r = rollD100(check.value);
+      const mode = edition === "coc7" ? diceMode : "none";
+      const r = mode !== "none" ? rollD100WithDice(check.value, mode, edition) : { ...rollD100(check.value, edition), detail: "" };
       const rLabel = r.level === "crit" ? "大成功" : r.level === "hard" ? "困难成功" : r.level === "success" ? "成功" : r.level === "fumble" ? "大失败" : "失败";
       const success = r.level !== "fail" && r.level !== "fumble";
-      const rollMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${userIdentity?.name || "你"} · ${action || speech}（${check.source} ${check.value}）`, text: `D100 = ${r.roll} → ${rLabel}`, emotion: success ? "success" : "fail" };
+      const rollText = mode !== "none" ? `D100 = ${r.roll} ${r.detail} → ${rLabel}` : `D100 = ${r.roll} → ${rLabel}`;
+      const rollMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${userIdentity?.name || "你"} · ${action || speech}（${check.source} ${check.value}）`, text: rollText, emotion: success ? "success" : "fail" };
       pushMessages(rollMsg);
       streamRef.current = [...streamRef.current, rollMsg];
       usedSkillsRef.current.add(check.source.replace(/\(.*\)$/, ""));
@@ -1441,7 +1470,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       }
     }
     handlePlayerAction(combined, !skill);
-  }, [checkSkill, freeText, freeAction, save, is7th, pushMessages, persistSave, handlePlayerAction, userIdentity]);
+  }, [checkSkill, freeText, freeAction, save, is7th, diceMode, pushMessages, persistSave, handlePlayerAction, userIdentity]);
 
   const handleToggleFreeMode = useCallback(() => {
     if (freeMode) {
@@ -2168,6 +2197,28 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                   }}
                 />
               </div>
+              {/* 7th edition: bonus/penalty dice selector (fork) */}
+              {is7th && (
+                <div style={{ display: "flex", gap: 5 }}>
+                  {([["none", "普通"], ["bonus", "奖励骰"], ["penalty", "惩罚骰"]] as const).map(([val, t]) => {
+                    const active = diceMode === val;
+                    return (
+                      <button key={val} type="button"
+                        onClick={() => setDiceMode(active ? "none" : val)}
+                        title={val === "bonus" ? "两粒D100取低（条件有利时）" : val === "penalty" ? "两粒D100取高（条件不利时）" : "常规单骰"}
+                        style={{
+                          flex: 1, padding: "5px 0", borderRadius: 7,
+                          border: `1px solid ${active ? "var(--c-adv-accent-dim)" : "var(--c-adv-input-border)"}`,
+                          background: active ? "var(--c-adv-choice-bg)" : "var(--c-adv-input-bg)",
+                          color: active ? "var(--c-adv-accent)" : "var(--c-adv-text-muted)",
+                          fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                        }}>
+                        {val === "none" ? "🎲 " : val === "bonus" ? "✦ " : "✖ "}{t}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               {/* Speech input */}
               <div style={{ display: "flex", gap: 6 }}>
                 <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", lineHeight: "32px", flexShrink: 0, width: 20, textAlign: "center" }}>💬</span>

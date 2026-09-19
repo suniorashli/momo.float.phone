@@ -123,10 +123,13 @@ export type EncounterSeed = {
   locationNode?: string;      // specific node name
 };
 
+export type RulesEdition = "coc6" | "coc7";
+
 export type WorldSkeleton = {
   world: {
     name: string;
     lore: string;
+    rulesEdition?: RulesEdition;   // fork: 6th/7th edition (default coc6 for old worlds)
   };
   mapInput: WorldSkeletonInput;
   richRegions: RichRegion[];     // full node content (NPC/quest/encounter per node)
