@@ -551,6 +551,11 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 - 选项设计要引导剧情前进：至少一个选项与主线相关，让玩家有理由去探索下一个关键地点
 - 不要让玩家在同一个地方原地转圈——如果当前地点的调查已经完成，暗示他们该去哪里
 【选项纪律·核心】choices 数组通常留空 [] 或至多 1-2 个明显是"移动/离开"类选项；调查行动不要做成选项——那是调查员自己宣言的事。你的引导职责全部由 hints 承担
+
+【线索与收尾】
+- clues数组：本轮调查真正获得的关键线索，每条一句短句（系统会归档到线索板，按地点分类，全队可见）；没有新线索就留空[]
+- investigation_done：当本地点能发现的东西已经全部给出、继续停留只会原地空转时设为true（系统会提示调查员转移地点，防止无意义重复调查）
+- topics数组：与NPC对话的场景（事件类型为交谈）给出3-5个值得问的话题：label=问题方向（如"问起昨夜的动静"），skillHint=建议技能（话术/心理学/说服等）；非对话场景留空[]
 - advance=true表示当前主线阶段完成，请在关键剧情节点（获得关键线索/揭示重大真相/逃出险境）时设为true
 
 【COC氛围与判定】
@@ -584,7 +589,7 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
-{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动，像是在提醒来客这里并不太平。\\n\\n柜台后的老板抬起头，看了队伍一眼。柜台上摆着一盏油灯和一本翻开的住宿登记簿。","npc_lines":[{"speaker":"老板","text":"「这么晚才来？就剩两间房了。」他打量着来客，手指无意识地敲着登记簿。"}],"situation":"角色们看到的（传给角色AI）","choices":[],"hints":[{"label":"翻看住宿登记簿","skillHint":"图书馆使用"},{"label":"观察老板的神色","skillHint":"心理学"},{"label":"留意屋外的动静","skillHint":"聆听"}],"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品或SAN-5"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
+{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动，像是在提醒来客这里并不太平。\\n\\n柜台后的老板抬起头，看了队伍一眼。柜台上摆着一盏油灯和一本翻开的住宿登记簿。","npc_lines":[{"speaker":"老板","text":"「这么晚才来？就剩两间房了。」他打量着来客，手指无意识地敲着登记簿。"}],"situation":"角色们看到的（传给角色AI）","choices":[],"hints":[{"label":"翻看住宿登记簿","skillHint":"图书馆使用"},{"label":"观察老板的神色","skillHint":"心理学"},{"label":"留意屋外的动静","skillHint":"聆听"}],"topics":[{"label":"问起最近的怪事","skillHint":"话术"}],"clues":["登记簿上有一个被划掉的名字"],"investigation_done":false,"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品或SAN-5"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
 
 export type DMSceneResult = {
   narration: string;
@@ -592,6 +597,9 @@ export type DMSceneResult = {
   situation: string;
   choices: { label: string; statCheck?: { stat: string; who?: string }; requires?: string }[];
   hints?: { label: string; skillHint?: string }[];
+  topics?: { label: string; skillHint?: string }[];
+  clues?: string[];
+  investigationDone?: boolean;
   journal: string;
   gained: string[];
   lost: string[];
@@ -734,6 +742,15 @@ ${(ctx.mainQuestStages || []).map((s, i) => {
     return `${i + 1}. [${(ctx.mainQuestNodeMap || {})[i] || "?"}] ${s.brief}${s.result ? `→${s.result}` : ""} ${marker}`;
   }).join("\n")}` : "";
 
+  // Fork: game time-of-day atmosphere hint (scene generation follows the current time slot)
+  const TIME_MOODS: Record<string, string> = {
+    morning: "清晨——薄雾、湿冷的街道、刚睡醒的小镇，人们开始日常但心不在焉",
+    afternoon: "午后——日光正盛，一切看起来过于正常，白天的调查多以走访、翻查档案为主",
+    evening: "黄昏——光线渐暗，行人稀少，商店陆续打烊，调查开始染上不安的底色",
+    night: "夜晚——黑暗是恐怖的放大器：视线受限、独行者、不该有的声响；夜里的检定更容易撞上真正的危险",
+  };
+  const timeBlock = ctx.gameTime.includes("清晨") ? `\n[时段氛围]${TIME_MOODS.morning}` : ctx.gameTime.includes("午后") ? `\n[时段氛围]${TIME_MOODS.afternoon}` : ctx.gameTime.includes("黄昏") ? `\n[时段氛围]${TIME_MOODS.evening}` : ctx.gameTime.includes("夜晚") ? `\n[时段氛围]${TIME_MOODS.night}` : "";
+
   const pacingHint = ctx.pacing === "relaxed" ? "\n叙事节奏：悠闲（多展开日常互动、支线、角色关系，不急着推主线。每个主线阶段至少经过16-20轮互动后才设advance=true，充分展开剧情和角色关系再推进）"
     : ctx.pacing === "fast" ? "\n叙事节奏：紧凑（积极推进主线，每个场景都往前赶。每个主线阶段经过5-6轮互动就可以advance=true）"
     : "\n叙事节奏：适中（每个主线阶段经过10-12轮互动后再设advance=true，平衡推进和探索）";
@@ -761,7 +778,7 @@ ${ctx.madness?.permanent ? `\n【疯狂状态】{{user}}已永久疯狂（SAN归
   : ctx.madness?.temporary ? `\n【疯狂状态】{{user}}临时疯狂发作中（剩余${ctx.madness.temporary.rounds}轮）：${ctx.madness.temporary.symptom}——描述中体现该症状，其宣言可能不受理智控制，其余队员可以尝试约束/安抚。` : ""}
 
 # 当前场景
-地点：${ctx.currentLocation} · ${ctx.gameTime}
+地点：${ctx.currentLocation} · ${ctx.gameTime}${timeBlock}
 事件：${ctx.eventType} — ${ctx.eventBrief}
 ${ctx.npcName ? `NPC：${ctx.npcName}（${ctx.npcPersonality}）` : ""}
 队伍成员：{{user}}、${ctx.companionNames.join("、") || "无"}
@@ -849,6 +866,12 @@ export async function dmScene(ctx: DMContext, apiConfig: ApiConfig): Promise<DMS
       label: String(h.label || ""),
       skillHint: h.skillHint ? String(h.skillHint) : (h.skill_hint ? String(h.skill_hint) : undefined),
     })).filter((h: { label: string }) => h.label),
+    topics: (p.topics || []).map((t: Record<string, unknown>) => ({
+      label: String(t.label || ""),
+      skillHint: t.skillHint ? String(t.skillHint) : (t.skill_hint ? String(t.skill_hint) : undefined),
+    })).filter((t: { label: string }) => t.label),
+    clues: (p.clues || []).map((c: unknown) => String(c || "")).filter(Boolean),
+    investigationDone: p.investigation_done || p.investigationDone || false,
   };
 }
 
@@ -955,6 +978,9 @@ export async function expandEvent(
       ...(c.requires ? { requires: c.requires } : {}),
     })),
     hints: dm.hints,
+    topics: dm.topics,
+    clues: dm.clues,
+    investigationDone: dm.investigationDone,
     affinityDelta: {},
     journalEntry: dm.journal,
     unlocks: [],
@@ -1212,10 +1238,15 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是COC跑团的守秘人（KP）。
 - 禁止跳步：不要「某人成功了，拿到了线索」式的直陈结果。过程在先，结果在后
 - 掷骰结果已由系统给出，按结果演出即可——但演出要丰满，不能因为结果已定就省略过程描写
 
+【线索与收尾】
+- clues数组：本轮调查真正获得的关键线索（每条一句短句，系统归档到线索板供全队随时翻看）；没有新线索留空[]
+- investigation_done：本地点能查的都查完、停留已无意义时设为true（系统会提示调查员转移）
+- topics数组：若场景里NPC在场且值得追问，给出3-5个话题（label=问题方向，skillHint=建议技能）；没有就留空[]
+
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
-{"narration":"火光在墙上跳了两下，照得每个人的神情都忽明忽暗。\\n\\n队伍各自的行动在同一刻撞在一起，让原本僵持的局势突然松动。\\n\\n门外传来的脚步声，说明新的变化已经逼近。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"新局势描述","choices":[{"label":"小心地调查声音来源","stat_check":{"stat":"聆听"}},{"label":"{{user}}镇定地与警察周旋","stat_check":{"stat":"话术","who":"{{user}}"}},{"label":"直接离开"}],"journal":"日志","gained":["获得物品"],"lost":["失去物品或SAN-3"],"advance":false,"ending":false,"move_to":"节点名 或 {\"{{user}}\":\"节点名\",\"角色名\":\"节点名\"}","world_events":["世界各处事件"]}`;
+{"narration":"火光在墙上跳了两下，照得每个人的神情都忽明忽暗。\\n\\n队伍各自的行动在同一刻撞在一起，让原本僵持的局势突然松动。\\n\\n门外传来的脚步声，说明新的变化已经逼近。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"新局势描述","choices":[{"label":"小心地调查声音来源","stat_check":{"stat":"聆听"}},{"label":"{{user}}镇定地与警察周旋","stat_check":{"stat":"话术","who":"{{user}}"}},{"label":"直接离开"}],"journal":"日志","gained":["获得物品"],"lost":["失去物品或SAN-3"],"clues":["新获得的关键线索"],"topics":[],"investigation_done":false,"advance":false,"ending":false,"move_to":"节点名 或 {\"{{user}}\":\"节点名\",\"角色名\":\"节点名\"}","world_events":["世界各处事件"]}`;
 
 async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneResult> {
   const userMsg = buildDMUserMsg(ctx);
@@ -1262,6 +1293,12 @@ async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneR
     moveTo: p.move_to ?? p.moveTo ?? "",
     worldEvents: (p.world_events || p.worldEvents || []).map((event: string) => String(event || "")),
     ending: p.ending || false,
+    topics: (p.topics || []).map((t: Record<string, unknown>) => ({
+      label: String(t.label || ""),
+      skillHint: t.skillHint ? String(t.skillHint) : (t.skill_hint ? String(t.skill_hint) : undefined),
+    })).filter((t: { label: string }) => t.label),
+    clues: (p.clues || []).map((c: unknown) => String(c || "")).filter(Boolean),
+    investigationDone: p.investigation_done || p.investigationDone || false,
   };
 }
 
@@ -1296,6 +1333,9 @@ export async function resolveRound(
     moveTo: dm.moveTo,
     worldEvents: dm.worldEvents,
     ending: dm.ending,
+    topics: dm.topics,
+    clues: dm.clues,
+    investigationDone: dm.investigationDone,
   };
 }
 

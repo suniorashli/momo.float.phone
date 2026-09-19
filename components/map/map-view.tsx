@@ -12,7 +12,7 @@ import {
 import { ADVENTURE_THEMES } from "./map-text-stream";
 import { loadCharacters } from "@/lib/character-storage";
 import { loadApiConfigs, loadBindingConfig, resolveBinding, resolveUserIdentity, resolveAuxiliaryApiConfig } from "@/lib/settings-storage";
-import { expandEvent, companionDeclare, resolveRound, rollD100, resolveCheckStat, ROLL_LABELS, formatGameTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
+import { expandEvent, companionDeclare, resolveRound, rollD100, resolveCheckStat, ROLL_LABELS, formatGameTime, advanceTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
 import { skillCheckValue, resolveAttack, rollExpr, dbFromStats, findWeaponMention, LEVEL_LABEL, sanityLossVerdict, rollTemporaryMadness, buildInitiative, makeHostile, canSpendLuck, rollD100WithDice, type RollLevel, type HostileCombatant } from "@/lib/coc-sheet";
 import { STAT_LABELS, ALL_STATS } from "@/lib/map-types";
 import MapRenderer from "./map-renderer";
@@ -52,7 +52,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   // New text-centric states
   const [streamMessages, setStreamMessages] = useState<StreamMessage[]>(save.streamLog || []);
   const [showToolPanel, setShowToolPanel] = useState(false);
-  const [toolTab, setToolTab] = useState<"map" | "contacts" | "bag">("map");
+  const [toolTab, setToolTab] = useState<"map" | "contacts" | "bag" | "clues">("map");
   const [inEvent, setInEvent] = useState(save.pendingEvent?.inEvent || false);
   const [currentChoices, setCurrentChoices] = useState<EventChoice[] | null>(save.pendingEvent?.choices || null);
   const [freeText, setFreeText] = useState("");
@@ -60,6 +60,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   // Fork: player-chosen check skill for the current declaration
   const [checkSkill, setCheckSkill] = useState("");
   const [currentHints, setCurrentHints] = useState<{ label: string; skillHint?: string }[] | null>(save.pendingEvent?.hints || null);
+  // Fork: NPC talk topics from KP (tappable → fills speech input)
+  const [currentTopics, setCurrentTopics] = useState<{ label: string; skillHint?: string }[] | null>(null);
   const [diceOverlay, setDiceOverlay] = useState<{ name: string; stat: string; statValue: number; context: string; label: string; isPlayer: boolean } | null>(null);
   const [diceRolling, setDiceRolling] = useState(false);
   const [diceNumber, setDiceNumber] = useState(0);
@@ -493,23 +495,32 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       };
 
       const scene = await expandEvent(dmCtx, companionIds, apiConfig);
+      failedSkillsRef.current.clear(); // new scene — reset the failed-check guard
       const dmScene = scene as EventScene & { dmSituation?: string; worldEvents?: string[] };
       if (dmScene.worldEvents?.length) setWorldEvents(dmScene.worldEvents);
 
       const sceneJournal = scene.journalEntry?.trim();
-      if (sceneJournal) {
+      const sceneClues = (scene.clues || []).filter(Boolean);
+      if (sceneJournal || sceneClues.length) {
+        const locName = currentNode?.name || "未知地点";
+        const dayLabel = formatGameTime(save.gameDay, save.gameTime);
         persistSave({
           ...save,
-          journal: [...save.journal, {
+          journal: sceneJournal ? [...save.journal, {
             id: `j_${Date.now()}`,
             timestamp: formatGameTime(save.gameDay, save.gameTime),
             realTime: new Date().toISOString(),
             locationName: currentNode?.name || "",
             text: sceneJournal,
             type: eventType === "main_quest" ? "main" : "side",
-          }],
+          }] : save.journal,
+          clues: [...(save.clues || []), ...sceneClues.map((c, i) => ({ id: `clue_${Date.now()}_${i}`, location: locName, text: c, day: dayLabel }))],
           timestamp: new Date().toISOString(),
         });
+        if (sceneClues.length) pushMessages({ id: mkId(), type: "system", text: `🗂 线索归档：${sceneClues.join("；")}` });
+      }
+      if (scene.investigationDone) {
+        pushMessages({ id: mkId(), type: "system", text: "🔎 本地点的调查已告一段落，继续停留难有新发现——考虑转移地点" });
       }
 
       // Push dialogues to text stream
@@ -524,6 +535,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       // Fork: investigation hints from KP (scene stays open for player declarations)
       const sceneHints = (scene as EventScene & { hints?: { label: string; skillHint?: string }[] }).hints;
       setCurrentHints(sceneHints && sceneHints.length > 0 ? sceneHints : null);
+      const sceneTopics = (scene as EventScene & { topics?: { label: string; skillHint?: string }[] }).topics;
+      setCurrentTopics(eventType === "talk" && sceneTopics && sceneTopics.length > 0 ? sceneTopics : null);
 
       // Set choices if available
       if (scene.choices && scene.choices.length > 0) {
@@ -535,7 +548,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         setTimeout(() => inputRef.current?.focus(), 200);
       } else {
         // No choices — event done immediately
-        setCurrentChoices(null);
+        setCurrentChoices(null); setCurrentTopics(null);
         setInEvent(false);
         setActiveEvent(null);
         setActiveEventMeta(null);
@@ -578,7 +591,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         streamRef.current = [...streamRef.current, msg];
       }
     }
-    setCurrentChoices(null);
+    setCurrentChoices(null); setCurrentTopics(null);
     setEventContinueLoading(true);
     setLastFailedAction(actionText);  // save immediately so it persists if interrupted
 
@@ -934,7 +947,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         pushMessages({ id: mkId(), type: "system", text: "你倒下了..." });
         setShowDeathDialog(true);
         setInEvent(false);
-        setCurrentChoices(null);
+        setCurrentChoices(null); setCurrentTopics(null);
         setActiveEvent(null);
         setActiveEventMeta(null);
         setAccumulatedEvent(null);
@@ -950,7 +963,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         pushSceneToStream(continuation);
         persistSave({ ...newSave, completed: true });
         setInEvent(false);
-        setCurrentChoices(null);
+        setCurrentChoices(null); setCurrentTopics(null);
         setActiveEvent(null);
         setActiveEventMeta(null);
         setAccumulatedEvent(null);
@@ -972,6 +985,33 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         return;
       }
 
+      // Fork: archive clues from this resolve round + investigation-done hint + time ticks
+      {
+        const resolveClues = ((continuation as EventScene & { clues?: string[] }).clues || []).filter(Boolean);
+        if (resolveClues.length) {
+          pushMessages({ id: mkId(), type: "system", text: `🗂 线索归档：${resolveClues.join("；")}` });
+        }
+        if ((continuation as EventScene & { investigationDone?: boolean }).investigationDone) {
+          pushMessages({ id: mkId(), type: "system", text: "🔎 本地点的调查已告一段落——考虑转移地点" });
+        }
+        const ticks = (save.timeTicks || 0) + 1;
+        let timedSave = newSave;
+        if (ticks >= 4) {
+          const adv = advanceTime(save.gameTime, 1);
+          const timeLabel: Record<string, string> = { morning: "清晨", afternoon: "午后", evening: "黄昏", night: "夜晚" };
+          pushMessages({ id: mkId(), type: "system", text: `🌗 ${adv.newDay ? "新的一天开始了。" : ""}时间流逝——现在已是${timeLabel[adv.time]}（第${adv.newDay ? newSave.gameDay + 1 : newSave.gameDay}天）` });
+          timedSave = { ...timedSave, gameTime: adv.time, gameDay: adv.newDay ? newSave.gameDay + 1 : newSave.gameDay, timeTicks: 0 };
+        } else {
+          timedSave = { ...timedSave, timeTicks: ticks };
+        }
+        if (resolveClues.length) {
+          const locName = currentNode?.name || "未知地点";
+          const dayLabel = formatGameTime(newSave.gameDay, newSave.gameTime);
+          timedSave = { ...timedSave, clues: [...(timedSave.clues || []), ...resolveClues.map((c, i) => ({ id: `clue_${Date.now()}_r${i}`, location: locName, text: c, day: dayLabel }))] };
+        }
+        persistSave(timedSave);
+      }
+
       // Push DM continuation to stream
       if (continuation.dialogues.length > 0) {
         pushSceneToStream(continuation);
@@ -987,6 +1027,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
         if (continuation.choices && continuation.choices.length > 0) {
           setCurrentChoices(continuation.choices);
+          const contTopics = (continuation as EventScene & { topics?: { label: string; skillHint?: string }[] }).topics;
+          setCurrentTopics(contTopics && contTopics.length > 0 ? contTopics : null);
           setLastFailedAction(null); setCompletedCompanions([]); // success — clear pending action
           setTimeout(() => inputRef.current?.focus(), 200);
         } else {
@@ -994,7 +1036,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           setLastFailedAction(null);          pushMessages({ id: mkId(), type: "system", text: "—— 事件结束 ——" });
           const grownSave = runGrowthRollRef.current(newSave, [...usedSkillsRef.current]);
           if (grownSave !== newSave) persistSave(grownSave);
-          setCurrentChoices(null);
+          setCurrentChoices(null); setCurrentTopics(null);
           setInEvent(false);
           setActiveEvent(null);
           setActiveEventMeta(null);
@@ -1005,7 +1047,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         pushMessages({ id: mkId(), type: "system", text: "—— 事件结束 ——" });
         const grownSave = runGrowthRoll(newSave, [...usedSkillsRef.current]);
         if (grownSave !== newSave) persistSave(grownSave);
-        setCurrentChoices(null);
+        setCurrentChoices(null); setCurrentTopics(null);
         setInEvent(false);
         setActiveEvent(null);
         setActiveEventMeta(null);
@@ -1033,6 +1075,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   const runGrowthRollRef = useRef<(s: GameSave, skills?: string[]) => GameSave>((s) => s);
   // Skills used during the current event (ref so growth roll after resolve can read them)
   const usedSkillsRef = useRef<Set<string>>(new Set());
+  // Fork: skills that already failed this scene (soft re-roll guard → pushed check / KP adjudication)
+  const failedSkillsRef = useRef<Set<string>>(new Set());
 
   // ── CoC6 madness builder (helper) ──
   const newSaveMadness = (sanBefore: number, verdict: { temporaryMadness: boolean; goneInsane: boolean }, sanAfter: number): { temporary?: { rounds: number; symptom: string }; permanent?: boolean; raw: GameSave["madness"] } => {
@@ -1221,7 +1265,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     const exitMsg: StreamMessage = { id: mkId(), type: "narration", text: `${playerName}：决定离开，不再继续当前事件。` };
     pushMessages(exitMsg);
     streamRef.current = [...streamRef.current, exitMsg];
-    setCurrentChoices(null);
+    setCurrentChoices(null); setCurrentTopics(null);
 
     // Let companions react to the exit decision
     try {
@@ -1441,6 +1485,10 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     setCheckSkill("");
     setDiceMode("none");
     if (skill) {
+      // Fork: same-scene failed check guard — warn on repeat (pushed-check rule: must justify a new approach)
+      if (failedSkillsRef.current.has(skill)) {
+        pushMessages({ id: mkId(), type: "system", text: `⚠ ${skill} 检定本场景已失败过——重复宣言请说明新的做法或理由，否则 KP 可裁定为重复无效` });
+      }
       // Roll the player's chosen skill immediately, then continue as a declaration
       const edition = is7th ? "coc7" as const : "coc6" as const;
       const check = skillCheckValue(save.playerSheet, skill, save.playerStats, edition);
@@ -1448,6 +1496,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       const r = mode !== "none" ? rollD100WithDice(check.value, mode, edition) : { ...rollD100(check.value, edition), detail: "" };
       const rLabel = r.level === "crit" ? "大成功" : r.level === "hard" ? "困难成功" : r.level === "success" ? "成功" : r.level === "fumble" ? "大失败" : "失败";
       const success = r.level !== "fail" && r.level !== "fumble";
+      if (!success) failedSkillsRef.current.add(skill);
       const rollText = mode !== "none" ? `D100 = ${r.roll} ${r.detail} → ${rLabel}` : `D100 = ${r.roll} → ${rLabel}`;
       const rollMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${userIdentity?.name || "你"} · ${action || speech}（${check.source} ${check.value}）`, text: rollText, emotion: success ? "success" : "fail" };
       pushMessages(rollMsg);
@@ -1588,7 +1637,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           setLastFailedAction(null);          setTimeout(() => inputRef.current?.focus(), 200);
         } else {
           setLastFailedAction(null);          pushMessages({ id: mkId(), type: "system", text: "—— 事件结束 ——" });
-          setCurrentChoices(null);
+          setCurrentChoices(null); setCurrentTopics(null);
           setInEvent(false);
           setActiveEvent(null);
           setActiveEventMeta(null);
@@ -1596,7 +1645,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         }
       } else {
         pushMessages({ id: mkId(), type: "system", text: "—— 事件结束 ——" });
-        setCurrentChoices(null);
+        setCurrentChoices(null); setCurrentTopics(null);
         setInEvent(false);
         setActiveEvent(null);
         setActiveEventMeta(null);
@@ -2124,7 +2173,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                   <button onClick={() => {
                     pushMessages({ id: mkId(), type: "system", text: "—— 连接中断，已恢复探索 ——" });
                     setInEvent(false);
-                    setCurrentChoices(null);
+                    setCurrentChoices(null); setCurrentTopics(null);
                     setActiveEvent(null);
                     setActiveEventMeta(null);
                     setAccumulatedEvent(null);
@@ -2179,6 +2228,26 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                   ))}
                 </div>
               )}
+              {/* Fork: NPC talk topics (tappable → fills speech input) */}
+              {inEvent && currentTopics && currentTopics.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "2px 0" }}>
+                  <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", fontFamily: "monospace", letterSpacing: "0.1em", lineHeight: "24px" }}>❓</span>
+                  {currentTopics.map((t, i) => (
+                    <button key={i} type="button"
+                      onClick={() => { setFreeText(t.label); if (t.skillHint) setCheckSkill(t.skillHint); }}
+                      style={{
+                        padding: "3px 9px", borderRadius: 12,
+                        border: "1px solid var(--c-adv-choice-border)", background: "var(--c-adv-choice-bg)",
+                        color: "var(--c-adv-text-dim)", fontSize: "calc(10px*var(--app-text-scale,1))",
+                        cursor: "pointer", fontFamily: "inherit",
+                        display: "flex", alignItems: "center", gap: 4,
+                      }}>
+                      {t.label}
+                      {t.skillHint && <span style={{ color: "var(--c-adv-accent-dim)", fontSize: "calc(9px*var(--app-text-scale,1))" }}>🎲{t.skillHint}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
               {/* Check skill input (CoC loop: player chooses what to roll) */}
               <div style={{ display: "flex", gap: 6 }}>
                 <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", lineHeight: "32px", flexShrink: 0, width: 20, textAlign: "center" }}>🎲</span>
@@ -2197,6 +2266,15 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                   }}
                 />
               </div>
+              {/* Fork: check-value preview (what will be rolled) */}
+              {checkSkill.trim() && !freeMode && (() => {
+                const preview = skillCheckValue(save.playerSheet, checkSkill.trim(), save.playerStats, is7th ? "coc7" : "coc6");
+                return (
+                  <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", padding: "0 2px", lineHeight: 1.6 }}>
+                    将掷检定：<span style={{ color: "var(--c-adv-accent)" }}>{preview.source} {preview.value}</span>{is7th && diceMode !== "none" ? ` · ${diceMode === "bonus" ? "奖励骰" : "惩罚骰"}` : ""}
+                  </div>
+                );
+              })()}
               {/* 7th edition: bonus/penalty dice selector (fork) */}
               {is7th && (
                 <div style={{ display: "flex", gap: 5 }}>
@@ -2990,7 +3068,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               display: "flex", borderBottom: "1px solid var(--c-adv-input-border)",
               flexShrink: 0,
             }}>
-              {(["map", "bag", "contacts"] as const).map(tab => (
+              {(["map", "bag", "clues", "contacts"] as const).map(tab => (
                 <button key={tab} onClick={() => setToolTab(tab)}
                   style={{
                     flex: 1, padding: "10px 0",
@@ -3000,7 +3078,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                     fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
                     letterSpacing: "0.05em",
                   }}>
-                  {tab === "map" ? "🗺 地图" : tab === "bag" ? `📊 状态` : `💬 同伴`}
+                  {tab === "map" ? "🗺 地图" : tab === "bag" ? "📊 状态" : tab === "clues" ? "🗂 线索" : "💬 同伴"}
                 </button>
               ))}
               <button onClick={() => setShowToolPanel(false)} style={{
@@ -3247,6 +3325,32 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                   <div style={{ marginTop: 2 }}>{currentNode?.name}</div>
                   <div style={{ marginTop: 2 }}>主线 第{Math.min(save.mainQuestStage + 1, skeleton.mainQuest.stages.length)}/{skeleton.mainQuest.stages.length}阶段</div>
                 </div>
+              </div>
+            ) : toolTab === "clues" ? (
+              /* Clue board — archived clues grouped by location (fork) */
+              <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
+                {(save.clues || []).length === 0 ? (
+                  <div style={{ fontSize: "calc(12px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", textAlign: "center", padding: "40px 0" }}>
+                    还没有归档的线索
+                  </div>
+                ) : (() => {
+                  const byLoc = new Map<string, { text: string; day: string }[]>();
+                  for (const c of save.clues!) {
+                    if (!byLoc.has(c.location)) byLoc.set(c.location, []);
+                    byLoc.get(c.location)!.push({ text: c.text, day: c.day });
+                  }
+                  return [...byLoc.entries()].map(([loc, list]) => (
+                    <div key={loc} style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", marginBottom: 5, letterSpacing: "0.08em" }}>📍 {loc}</div>
+                      {list.map((c, i) => (
+                        <div key={i} style={{ padding: "6px 10px", borderRadius: 6, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)", marginBottom: 4, fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)", lineHeight: 1.5 }}>
+                          {c.text}
+                          <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 2 }}>{c.day}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ));
+                })()}
               </div>
             ) : (
               /* Contacts tab */

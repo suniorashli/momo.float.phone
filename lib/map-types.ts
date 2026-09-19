@@ -254,6 +254,9 @@ export type GameSave = {
     phobias: string[];                // 恐惧症/狂躁症积累
     log: { day: string; text: string }[];
   };
+  // ── fork: clue board + time passage ──
+  clues?: { id: string; location: string; text: string; day: string }[];  // 线索板（按地点归档）
+  timeTicks?: number;                // 距上次时段推进的轮数计数
 };
 
 // ── MapWorld (stored in IndexedDB) — world is independent of characters ──
@@ -333,6 +336,9 @@ export type EventScene = {
   dialogues: EventDialogue[];
   choices?: EventChoice[];
   hints?: { label: string; skillHint?: string }[];  // fork: investigation prompts (CoC loop — player decides actions)
+  topics?: { label: string; skillHint?: string }[]; // fork: NPC talk topics (tappable → fills speech input)
+  clues?: string[];                 // fork: key clues gained this round → archived to the clue board
+  investigationDone?: boolean;      // fork: KP signals this location's investigation is complete (anti-idling)
   affinityDelta?: Record<string, number>;  // character affinity changes
   journalEntry?: string;       // auto-added to journal
   unlocks?: string[];          // node IDs to unlock/discover
