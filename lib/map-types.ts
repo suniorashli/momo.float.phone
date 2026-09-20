@@ -159,6 +159,16 @@ export type ModuleAct = {
   stageBrief: string;     // 主线阶段简介（映射到 mainQuest stage）
 };
 
+// ── Module core pack (fork 九期: sectioned import → review → share; 十二期: export/import) ──
+export type ModuleCore = {
+  npcs: { name: string; personality: string; role: string; location?: string }[];
+  locations: { name: string; type?: string; regionHint?: string }[];
+  truth: string;
+  acts: ModuleAct[];
+  rawImported?: { npcText: string; truthText: string; actText: string };  // 分栏原文（重提取用）
+  stageAssets?: { kind: "portrait" | "cg" | "bgm"; name: string; boundTo?: string; fileName: string; note?: string; dataBase64: string; mime: string }[];  // fork: 演出资源随包分享（base64 内嵌，导入时写入 IndexedDB）
+};
+
 // ── Investigator import (fork 十一期: persona adapted to the module era/setting) ──
 export type InvestigatorPersona = {
   name: string;           // 名字（保留原名或时代化别名）

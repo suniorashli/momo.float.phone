@@ -31,6 +31,8 @@ import { extractNpcsFromText, extractTruthFromText, extractActsFromText, assembl
 import { resolveUserIdentity } from "@/lib/settings-storage";
 import type { ModuleCore, ModuleAct } from "@/lib/map-types";
 import { generateMap, type GeoJSONData } from "@/lib/map-engine";
+import { registerAssetFiles, putAssetBlob, deleteAssetBlob } from "@/lib/stage-assets";
+import type { StageAsset } from "@/lib/map-types";
 import { loadApiConfigs, loadBindingConfig, resolveBinding } from "@/lib/settings-storage";
 import type { MapWorld, GameSave } from "@/lib/map-types";
 import { Toggle } from "@/components/ui/form";
@@ -90,6 +92,19 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   const [extractProgress, setExtractProgress] = useState("");
   const [moduleCore, setModuleCore] = useState<ModuleCore | null>(null);
   const [coreTab, setCoreTab] = useState<"npcs" | "truth" | "acts">("npcs");
+  // Fork: stage assets staged for the core pack (uploaded here, blobs written to IDB on world create)
+  const [coreAssets, setCoreAssets] = useState<{ asset: StageAsset; file: File }[]>([]);
+  const handleCoreAssetFiles = async (files: FileList | null) => {
+    if (!files?.length || !moduleCore) return;
+    const npcNames = moduleCore.npcs.map(n => n.name);
+    const { assets } = await registerAssetFiles("corepack", [...files], npcNames, coreAssets.map(x => x.asset));
+    const next: { asset: StageAsset; file: File }[] = [...coreAssets];
+    for (const a of assets.slice(coreAssets.length)) {
+      const f = [...files].find(ff => ff.name.replace(/\.[^.]+$/, "") === a.name || ff.name === a.fileName);
+      if (f) next.push({ asset: a, file: f });
+    }
+    setCoreAssets(next);
+  };
   const handleSectionFile = (file: File | null, setter: (t: string) => void) => {
     if (!file) return;
     const reader = new FileReader();
@@ -311,6 +326,17 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         };
         // Persist rules edition + KP style (same as LLM path)
         world.skeleton = { ...world.skeleton, world: { ...world.skeleton.world, rulesEdition: edition, lore: kpStyleInstruction ? `${world.skeleton.world.lore}\n\n【KP风格指令】${kpStyleInstruction}` : world.skeleton.world.lore } };
+        // Fork: install staged stage assets (from upload or imported pack) into this world
+        if (coreAssets.length) {
+          const installed: StageAsset[] = [];
+          for (const { asset, file } of coreAssets) {
+            const inst: StageAsset = { ...asset, id: `asset_${worldId}_${Date.now()}_${installed.length}` };
+            try { await putAssetBlob(inst.id, file); installed.push(inst); } catch { /* skip broken file */ }
+          }
+          if (installed.length) world.assets = installed;
+        }
+        // Clean up the temporary staging blobs (registerAssetFiles wrote them under "corepack_" ids)
+        for (const { asset } of coreAssets) { if (asset.id.startsWith("asset_corepack_")) deleteAssetBlob(asset.id).catch(() => undefined); }
         saveMapWorld(world);
         const startNode = renderedMap.l1Nodes[0]?.id || "l1_0";
         let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
@@ -772,9 +798,17 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
               )}
               {/* Core pack export/import (fork 十二期 — reuse reviewed extraction) */}
               <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                <button type="button" onClick={() => {
+                <button type="button" onClick={async () => {
                   if (!moduleCore) return;
-                  const blob = new Blob([JSON.stringify(moduleCore, null, 2)], { type: "application/json" });
+                  // Fork: embed staged stage assets (blobs → base64) so the pack is fully self-contained
+                  const stageAssets = await Promise.all(coreAssets.map(async ({ asset, file }) => {
+                    const buf = await file.arrayBuffer();
+                    const bytes = new Uint8Array(buf);
+                    let bin = "";
+                    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+                    return { kind: asset.kind, name: asset.name, boundTo: asset.boundTo, fileName: asset.fileName, note: asset.note, dataBase64: btoa(bin), mime: file.type };
+                  }));
+                  const blob = new Blob([JSON.stringify({ ...moduleCore, ...(stageAssets.length ? { stageAssets } : {}) }, null, 2)], { type: "application/json" });
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement("a");
                   a.href = url; a.download = `module-core-${Date.now()}.json`; a.click();
@@ -797,6 +831,21 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                         const core = JSON.parse(String(reader.result || "")) as ModuleCore;
                         if (!Array.isArray(core.npcs) || !Array.isArray(core.acts)) throw new Error("格式不符");
                         setModuleCore(core);
+                        // Fork: carried stage assets become staged Files (rewritten to IDB on world create)
+                        if (Array.isArray(core.stageAssets) && core.stageAssets.length) {
+                          const staged = await Promise.all(core.stageAssets.map(async sa => {
+                            const bin = atob(sa.dataBase64);
+                            const bytes = new Uint8Array(bin.length);
+                            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                            const file = new File([bytes], sa.fileName || `${sa.name}.bin`, { type: sa.mime || "application/octet-stream" });
+                            const asset: StageAsset = { id: `asset_corepack_${Date.now()}_${sa.name}`, kind: sa.kind, name: sa.name, boundTo: sa.boundTo, fileName: sa.fileName, note: sa.note };
+                            return { asset, file };
+                          }));
+                          setCoreAssets(staged);
+                          setError(`核心包已载入（含 ${staged.length} 个演出资源，创建世界时自动安装）`);
+                        } else {
+                          setCoreAssets([]);
+                        }
                       } catch (err) {
                         setError(`核心包导入失败：${err instanceof Error ? err.message : String(err)}`);
                       }
@@ -805,6 +854,40 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                   }} />
                 </label>
               </div>
+              {/* Fork: stage assets for the pack (portraits / CG / BGM — embedded on export) */}
+              {moduleCore && (
+                <div style={{ marginTop: 10, borderTop: "1px solid rgba(200,160,100,0.12)", paddingTop: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(200,160,100,0.5)", letterSpacing: "0.08em" }}>🎭 演出资源（随核心包分享）</span>
+                    {coreAssets.length > 0 && <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(140,220,160,0.8)", fontFamily: "monospace" }}>{coreAssets.length} 个</span>}
+                  </div>
+                  <label style={{
+                    display: "block", padding: "7px 10px", borderRadius: 7, textAlign: "center",
+                    border: "1px dashed rgba(200,160,100,0.25)", background: "rgba(0,0,0,0.15)",
+                    color: "rgba(200,160,100,0.6)", fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+                  }}>
+                    ＋ 添加立绘 / CG / BGM 文件（多选）
+                    <input type="file" multiple hidden accept="image/*,audio/*" onChange={e => { handleCoreAssetFiles(e.target.files); e.currentTarget.value = ""; }} />
+                  </label>
+                  {coreAssets.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 6, maxHeight: 110, overflowY: "auto" }}>
+                      {coreAssets.map(({ asset }, i) => (
+                        <div key={asset.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 7px", borderRadius: 6, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(200,160,100,0.08)" }}>
+                          <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))" }}>{asset.kind === "portrait" ? "🖼" : asset.kind === "cg" ? "🎬" : "🎵"}</span>
+                          <span style={{ flex: 1, minWidth: 0, fontSize: "calc(10px*var(--app-text-scale,1))", color: "#d8cbb8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {asset.name}{asset.boundTo ? ` → ${asset.boundTo}` : ""}
+                          </span>
+                          <button type="button" onClick={() => setCoreAssets(coreAssets.filter((_, j) => j !== i))}
+                            style={{ background: "none", border: "none", color: "rgba(255,100,80,0.5)", cursor: "pointer", fontSize: "calc(11px*var(--app-text-scale,1))", padding: 2 }}>✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.25)", marginTop: 5, lineHeight: 1.5 }}>
+                    命名规则：立绘=NPC名.png（自动绑定）· CG=cg_场景名.png · BGM=bgm_曲名.mp3；导出时打包进 JSON，对方导入即用
+                  </div>
+                </div>
+              )}
               {/* Review editor */}
               {moduleCore && (
                 <div style={{ marginTop: 10, borderTop: "1px solid rgba(200,160,100,0.12)", paddingTop: 10 }}>
