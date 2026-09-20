@@ -300,6 +300,27 @@ function MessageItem({
       );
     }
 
+    // Fork: OOC (皮下) — out-of-character chat bubble; story-neutral, never enters RP prompts
+    case "ooc": {
+      const isUser = msg.speaker === "__user__";
+      return (
+        <div style={{
+          margin: "3px 0", padding: "7px 10px", borderRadius: 10,
+          border: "1px dashed rgba(140,200,255,0.35)",
+          background: "rgba(140,200,255,0.06)",
+          opacity: 0.92,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+            <span style={{ fontSize: "calc(8px*var(--app-text-scale,1))", color: "rgba(140,200,255,0.7)", fontFamily: "monospace", letterSpacing: "0.2em", border: "1px solid rgba(140,200,255,0.35)", borderRadius: 3, padding: "0 4px" }}>OOC</span>
+            <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", fontWeight: 600, color: "rgba(170,215,255,0.9)" }}>
+              {isUser ? "你（皮下）" : msg.speaker}
+            </span>
+          </div>
+          <div style={{ fontSize: fontSize * 0.95, lineHeight, color: "var(--c-adv-text-dim)", whiteSpace: "pre-wrap" }}>{msg.text}</div>
+        </div>
+      );
+    }
+
     // Fork: round divider — a breathing bar marking "a new round of declarations begins"
     case "divider":
       return (

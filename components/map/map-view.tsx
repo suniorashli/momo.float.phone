@@ -12,7 +12,7 @@ import {
 import { ADVENTURE_THEMES } from "./map-text-stream";
 import { loadCharacters } from "@/lib/character-storage";
 import { loadApiConfigs, loadBindingConfig, resolveBinding, resolveUserIdentity, resolveAuxiliaryApiConfig } from "@/lib/settings-storage";
-import { expandEvent, companionDeclare, resolveRound, rollD100, resolveCheckStat, ROLL_LABELS, formatGameTime, advanceTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
+import { expandEvent, companionDeclare, resolveRound, rollD100, resolveCheckStat, ROLL_LABELS, formatGameTime, advanceTime, pickEncounter, shouldTriggerEncounter, setDMDebugCallback, shouldAutoSummarize, generateAdventureSummary, generateEnding, generateAfterTalk, type EndingResult, DEFAULT_DM_ENDING_PROMPT } from "@/lib/map-rpg-engine";
 import { skillCheckValue, resolveAttack, rollExpr, dbFromStats, findWeaponMention, LEVEL_LABEL, sanityLossVerdict, rollTemporaryMadness, buildInitiative, makeHostile, canSpendLuck, rollD100WithDice, SKILL_BASE_6, SKILL_BASE_7, type RollLevel, type HostileCombatant } from "@/lib/coc-sheet";
 import { STAT_LABELS, ALL_STATS, type StageAsset } from "@/lib/map-types";
 import { getAssetUrl, buildAssetManifest, registerAssetFiles, deleteAssetBlob } from "@/lib/stage-assets";
@@ -73,6 +73,14 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   const [hoAssignOpen, setHoAssignOpen] = useState(false);
   const [hoAssignMap, setHoAssignMap] = useState<Record<string, string>>({});   // characterId|"__player__" → ho
   const [hoAssignLoading, setHoAssignLoading] = useState(false);
+  // Fork: OOC (皮下吐槽) — story-neutral out-of-character chat (folded panel above the stream)
+  const [oocMode, setOocMode] = useState(false);
+  const [showOocPanel, setShowOocPanel] = useState(false);
+  const [oocReplying, setOocReplying] = useState(false);
+  // Fork: 后日谈 lines rendered inside the ending card
+  const [afterTalk, setAfterTalk] = useState<{ speaker: string; text: string }[]>([]);
+  const [afterTalkLoading, setAfterTalkLoading] = useState(false);
+  const oocPanelRef = useRef<HTMLDivElement>(null);
   // Fork 十二期: player persona review modal (first world entry)
   const [personaReview, setPersonaReview] = useState<GameSave["myPersona"]>(save.myPersona && !save.myPersona.confirmed ? save.myPersona : null);
   // Fork 十期: stage cues — CG overlay + BGM player
@@ -121,12 +129,19 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const endingScrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll ending overlay when step changes
+  // Auto-scroll ending overlay when step changes (or after-talk lines arrive)
   useEffect(() => {
     if (endingScrollRef.current) {
       endingScrollRef.current.scrollTop = endingScrollRef.current.scrollHeight;
     }
-  }, [endingStep]);
+  }, [endingStep, afterTalkLoading, afterTalk]);
+
+  // Fork: keep the OOC panel pinned to the newest line
+  React.useEffect(() => {
+    if (oocPanelRef.current && showOocPanel) {
+      oocPanelRef.current.scrollTop = oocPanelRef.current.scrollHeight;
+    }
+  }, [streamMessages, showOocPanel]);
 
   // Stream message helpers
   const nextMsgId = useRef(0);
@@ -834,7 +849,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
       // Include full stream log (narration + NPC + player + character + rolls) so DM sees free-chat context too
       const prevDialogue = streamRef.current
-        .filter(m => m.type !== "system" && m.type !== "divider")
+        .filter(m => m.type !== "system" && m.type !== "divider" && m.type !== "ooc")
         .map(m => m.type === "declCard" && m.decl
           ? `${m.decl.who}: ${[m.decl.say ? `说：「${m.decl.say}」` : "", m.decl.do ? `做：${m.decl.do}` : "", m.decl.dice ? `（宣言检定 ${m.decl.dice.skill}${m.decl.dice.value}：D100=${m.decl.dice.roll}，结果由你演出）` : ""].filter(Boolean).join(" ")}`
           : (m.speaker ? `${m.speaker}: ${m.text}` : m.text))
@@ -1245,6 +1260,14 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           const ending = await generateEnding(dmCtxForEnding, apiConfig);
           setEndingData(ending);
           setEndingStep(0);
+          // Fork: 后日谈——全员以本人身份闲聊吐槽这个模组（结局卡内展示，不进主消息流）
+          setAfterTalkLoading(true);
+          try {
+            const dmCtxForAT: import("@/lib/map-rpg-engine").DMContext = { ...dmCtxForEnding, recentJournal: saveRef.current.journal.map(j => j.text) };
+            const at = await generateAfterTalk(dmCtxForAT, apiConfig, saveRef.current.agents.map(a => charName(a.characterId)));
+            setAfterTalk(at.lines);
+          } catch { /* after-talk is best-effort */ }
+          setAfterTalkLoading(false);
           // Final summary on game completion — use auxiliary API
           const endSummaryApi = resolveAuxiliaryApiConfig("memorySummaryApiConfigId") || apiConfig;
           generateAdventureSummary(newSave, skeleton.world.name, endSummaryApi).catch(() => undefined);
@@ -1738,6 +1761,49 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     handlePlayerAction(choice.label, true);
   }, [handlePlayerAction, save, characters, userIdentity, pushMessages, persistSave, is7th, diceMode]);
 
+  // Fork: OOC (皮下吐槽) — story-neutral chat; companions reply as themselves (no persona, no RP)
+  // declared before handleFreeInput (deps order)
+  const submitOoc = useCallback(async () => {
+    const text = (freeText.trim() || freeAction.trim());
+    if (!text || oocReplying) return;
+    setFreeText("");
+    setFreeAction("");
+    const playerName = userIdentity?.name || "你";
+    const userOocMsg: StreamMessage = { id: mkId(), type: "ooc", speaker: "__user__", text: `〔${playerName}〕${text}` };
+    pushMessages(userOocMsg);
+    streamRef.current = [...streamRef.current, userOocMsg];
+    setShowOocPanel(true);
+    setOocReplying(true);
+    try {
+      const apiConfigs = loadApiConfigs();
+      const bindings = loadBindingConfig();
+      const slot = resolveBinding(bindings, undefined, "adventure");
+      const apiConfig = (slot?.apiConfigId ? apiConfigs.find(c => c.id === slot.apiConfigId) : null) || apiConfigs.find(c => c.apiKey) || apiConfigs[0];
+      if (!apiConfig?.apiKey) throw new Error("无API配置");
+      // Fork: OOC history rides inside instruction (engine's filteredLog drops ooc-type messages,
+      // so passing them via streamLog would leave companions blind)
+      const oocHistory = streamRef.current.filter(m => m.type === "ooc").slice(-10)
+        .map(m => m.speaker === "__user__" ? `〔OOC〕${m.text}` : `${m.speaker}：${m.text}`).join("\n");
+      for (const a of save.agents.slice(0, 3)) {
+        const ch = characters.find(c => c.id === a.characterId);
+        if (!ch) continue;
+        const decl = await companionDeclare(a.characterId, apiConfig, [], undefined, a.affinity, {
+          instruction: `${oocHistory ? `以下是到目前为止的皮下吐槽记录（OOC）：\n${oocHistory}\n\n` : ""}现在是"皮下吐槽"时间（OOC）：你们暂时脱离角色，以你本人的身份和{{user}}闲聊——吐槽这个模组的剧情、刚才的剧情走向、KP的安排，或者随便聊。规则：
+- 你就是你（${ch.name}），不是任何调查员；说话方式用你平时的（与角色卡一致）
+- 谈到剧情时用"刚才那个剧情里/你那个角色"的说法
+- 1-3句就好，像朋友插话吐槽；不行动、不宣言、不检定（action 留空、skill_check 留空）
+- speech 就是你的吐槽内容`,
+        });
+        if (decl.speech && decl.speech !== "……") {
+          const replyMsg: StreamMessage = { id: mkId(), type: "ooc", speaker: decl.speaker, text: decl.speech };
+          pushMessages(replyMsg);
+          streamRef.current = [...streamRef.current, replyMsg];
+        }
+      }
+    } catch { /* silent */ }
+    setOocReplying(false);
+  }, [freeText, freeAction, oocReplying, save.agents, characters, userIdentity, pushMessages]);
+
   // Fork 八期B: player-initiated private talk — visible to the user only, archived to lockedLog
   // (declared BEFORE handleFreeInput — its deps array must not touch a TDZ binding)
   const submitPrivateTalk = useCallback(() => {
@@ -1761,6 +1827,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   // ── Handle free text input ──
   const handleFreeInput = useCallback(() => {
     if ((!freeText.trim() && !freeAction.trim()) || eventContinueLoading || eventLoading) return;
+    if (oocMode) { submitOoc(); return; }
     if (privateTalk && inEvent) { submitPrivateTalk(); return; }
     const speech = freeText.trim();
     const action = freeAction.trim();
@@ -1778,7 +1845,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     } else {
       triggerEvent("talk", combined);
     }
-  }, [freeText, freeAction, eventContinueLoading, eventLoading, inEvent, handlePlayerAction, triggerEvent, privateTalk, submitPrivateTalk]);
+  }, [freeText, freeAction, eventContinueLoading, eventLoading, inEvent, handlePlayerAction, triggerEvent, privateTalk, submitPrivateTalk, oocMode, submitOoc]);
 
   const submitFreeInput = useCallback(() => {
     if (freeMode) {
@@ -1936,7 +2003,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
       // Build DM context
       const prevDialogue = recentStream
-        .filter(m => m.type !== "system" && m.type !== "divider")
+        .filter(m => m.type !== "system" && m.type !== "divider" && m.type !== "ooc")
         .map(m => m.type === "declCard" && m.decl
           ? `${m.decl.who}: ${[m.decl.say ? `说：「${m.decl.say}」` : "", m.decl.do ? `做：${m.decl.do}` : "", m.decl.dice ? `（宣言检定 ${m.decl.dice.skill}${m.decl.dice.value}：D100=${m.decl.dice.roll}，结果由你演出）` : ""].filter(Boolean).join(" ")}`
           : (m.speaker ? `${m.speaker}: ${m.text}` : m.text))
@@ -2287,10 +2354,64 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         </div>
       )}
 
+      {/* Fork: OOC (皮下) collapsible — story-neutral chatter stays out of the way */}
+      {streamMessages.some(m => m.type === "ooc") && (
+        <div style={{ padding: "0 12px", flexShrink: 0 }}>
+          <button onClick={() => setShowOocPanel(!showOocPanel)} style={{
+            width: "100%", padding: "4px 0",
+            background: "none", border: "none",
+            fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(140,200,255,0.55)", cursor: "pointer",
+            fontFamily: "monospace", letterSpacing: "0.1em",
+            textAlign: "center",
+          }}>
+            🎤 皮下吐槽 {showOocPanel ? "▲" : `▼（${streamMessages.filter(m => m.type === "ooc").length} 条）`}
+          </button>
+          {showOocPanel && (
+            <div ref={oocPanelRef} style={{ maxHeight: 150, overflowY: "auto", paddingBottom: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+              {streamMessages.filter(m => m.type === "ooc").map(m => {
+                const isUser = m.speaker === "__user__";
+                const avatar = !isUser ? fullAvatarMap[m.speaker || ""] : undefined;
+                return (
+                  <div key={m.id} style={{
+                    display: "flex", gap: 6, alignItems: "flex-start",
+                    flexDirection: isUser ? "row-reverse" : "row",
+                  }}>
+                    <div style={{
+                      width: 20, height: 20, borderRadius: "50%", flexShrink: 0,
+                      backgroundImage: avatar ? `url(${avatar})` : "none",
+                      backgroundColor: avatar ? "transparent" : "rgba(140,200,255,0.12)",
+                      backgroundSize: "cover", backgroundPosition: "center",
+                      border: "1px solid rgba(140,200,255,0.3)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 10, color: "rgba(170,215,255,0.8)",
+                    }}>{!avatar && (isUser ? "你" : (m.speaker?.[0] || "?"))}</div>
+                    <div style={{
+                      maxWidth: "82%", padding: "5px 9px", borderRadius: 10,
+                      background: isUser ? "rgba(140,200,255,0.14)" : "var(--c-adv-input-bg)",
+                      border: `1px solid ${isUser ? "rgba(140,200,255,0.3)" : "var(--c-adv-input-border)"}`,
+                    }}>
+                      {!isUser && (
+                        <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", fontWeight: 600, color: "rgba(170,215,255,0.9)", marginBottom: 1 }}>{m.speaker}</div>
+                      )}
+                      <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", lineHeight: 1.55, color: "var(--c-adv-text-dim)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.text}</div>
+                    </div>
+                  </div>
+                );
+              })}
+              {oocReplying && (
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(140,200,255,0.5)", textAlign: "center", fontFamily: "monospace", letterSpacing: "0.1em", padding: "2px 0" }}>
+                  …皮下插话中
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ═══ Text Stream ═══ */}
       <div style={{ flex: 1, position: "relative", overflow: "hidden", background: "transparent", display: "flex", flexDirection: "column", zIndex: 1 }}>
         <MapTextStream
-          messages={streamMessages}
+          messages={streamMessages.filter(m => m.type !== "ooc")}
           avatarMap={fullAvatarMap}
           fontFamily={customFontFamily}
           fontScale={worldTheme.fontScale}
@@ -2497,7 +2618,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               fontFamily: "monospace", letterSpacing: "0.1em", marginBottom: 4,
               textAlign: "center",
             }}>
-              {freeMode ? "自由交流中 — 输入后点击角色头像发送" : inEvent ? "事件进行中" : ""}
+              {oocMode ? "🎤 皮下吐槽中 — 发送后同伴以本人身份插话（不影响剧情）" : freeMode ? "自由交流中 — 输入后点击角色头像发送" : inEvent ? "事件进行中" : ""}
             </div>
           )}
 
@@ -2572,6 +2693,13 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                       fontSize: "calc(12px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
                     }}>
                       <span style={{ fontSize: "calc(14px*var(--app-text-scale,1))" }}>🎲</span> 技能检定{checkSkill.trim() ? `（已选 ${checkSkill.trim()}）` : ""}
+                    </button>
+                    <button type="button" onClick={() => { setPlusMenuOpen(false); setOocMode(prev => !prev); }} style={{
+                      display: "flex", alignItems: "center", gap: 8, padding: "9px 10px", borderRadius: 8,
+                      border: "none", background: "transparent", color: oocMode ? "rgba(140,200,255,0.95)" : "var(--c-adv-text)",
+                      fontSize: "calc(12px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                    }}>
+                      <span style={{ fontSize: "calc(14px*var(--app-text-scale,1))" }}>🎤</span> {oocMode ? "退出皮下吐槽" : "皮下吐槽（OOC）"}
                     </button>
                     {save.mySecret && inEvent && (
                       <button type="button" onClick={() => { setPlusMenuOpen(false); setPrivateTalk(prev => !prev); }} style={{
@@ -4258,6 +4386,25 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                 textShadow: "0 0 20px rgba(240,192,96,0.3)",
               }}>
                 {endingData.closing}
+              </div>
+            )}
+
+            {/* Fork: 后日谈 — after the closing, the cast drops their masks (rendered in-card) */}
+            {endingStep >= endingData.paragraphs.length && (afterTalkLoading || afterTalk.length > 0) && (
+              <div style={{ marginTop: 4, paddingTop: 12, borderTop: "1px solid rgba(140,200,255,0.15)" }}>
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(140,200,255,0.65)", fontFamily: "monospace", letterSpacing: "0.2em", textAlign: "center", marginBottom: 8 }}>
+                  🎬 后日谈 · 皮下复盘
+                </div>
+                {afterTalkLoading ? (
+                  <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(140,200,255,0.4)", textAlign: "center", padding: "6px 0" }}>
+                    大家正在卸下角色……
+                  </div>
+                ) : afterTalk.map((l, i) => (
+                  <div key={i} style={{ marginBottom: 7 }}>
+                    <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", fontWeight: 700, color: "rgba(170,215,255,0.9)", marginRight: 6 }}>{l.speaker}</span>
+                    <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.65)", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{l.text}</span>
+                  </div>
+                ))}
               </div>
             )}
 

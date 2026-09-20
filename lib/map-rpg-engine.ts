@@ -1544,7 +1544,7 @@ async function buildCompanionDeclarePromptPayload(
   const adventureConfig = loadAdventureInteractionConfig();
 
   // Fork 八期B: audience isolation — companions never see locked private talks (user's or others')
-  const filteredLog = (streamLog || []).filter(m => m.type !== "system" && m.type !== "divider" && !(m.audience && m.audience.includes("locked")));
+  const filteredLog = (streamLog || []).filter(m => m.type !== "system" && m.type !== "divider" && m.type !== "ooc" && m.type !== "declCard" && !(m.audience && m.audience.includes("locked")));
   // Fork: declCard → readable line for LLM context (the card itself has empty text)
   const describeMsgForLLM = (m: import("./map-types").StreamMessage): string => {
     if (m.type === "declCard" && m.decl) {
@@ -2120,6 +2120,48 @@ export type EndingResult = {
   paragraphs: string[];
   closing: string;
 };
+
+// ── Fork: 后日谈（AFTER TALK）——全员脱离角色，以"本人"身份闲聊吐槽这个模组 ──
+const AFTER_TALK_PROMPT = `跑团结束了，现在是"后日谈"环节。大家脱离了各自扮演的调查员身份——以你们自己的本人身份（性格、说话方式是你自己的，与平时和{{user}}聊天时一致；你知道自己是AI角色、刚陪{{user}}跑完一个COC模组）围坐闲聊，复盘这个模组。
+
+规则：
+- 用你自己的名字发言，语气是你本人的日常语气（吐槽、爆笑、心有余悸、意难平都可以）
+- 内容：这个模组本身写得怎么样（剧情坑/伏笔没回收/逻辑硬伤/狗血桥段——有槽就大胆吐，写得好的地方也可以夸）、刚才剧情里最难忘的瞬间（用"刚才那个剧情里/你那个角色"的说法，你们不是那个调查员）、互相调侃刚才的角色表现（"你那个角色居然想扔下我们跑路"）、问{{user}}的感受
+- {{user}}是和你一起跑团的玩家朋友，TA的消息以〔OOC〕标记——像回应好朋友一样回应TA
+- 不需要人人发言均衡，谁有梗谁说，3-8条消息自然收尾
+- 就是普通朋友聊天，禁止戏剧腔/旁白腔
+
+只输出JSON：{"lines":[{"speaker":"你的名字","text":"吐槽内容"},...]}`;
+
+export async function generateAfterTalk(
+  ctx: DMContext,
+  apiConfig: ApiConfig,
+  companionNames: string[],
+): Promise<{ lines: { speaker: string; text: string }[] }> {
+  const playerName = dmPlayerName(ctx);
+  const roster = companionNames.length ? `\n参与后日谈的：${companionNames.join("、")}（各自以本人身份发言）` : "";
+  const userMsg = `刚跑完的模组：${ctx.worldLore.slice(0, 200)}
+主线：${ctx.mainQuestSynopsis || ""}
+最近的剧情（节选）：${(ctx.recentJournal || []).slice(-8).join("；")}
+${roster}
+（{{user}}会视情况插话吐槽——回应TA）`;
+  const messages = [
+    { role: "system", content: renderUserNameMacro(AFTER_TALK_PROMPT, playerName) },
+    { role: "user", content: renderUserNameMacro(userMsg, playerName) },
+  ];
+  dmLog("后日谈·发送", formatDebugMessages(messages, apiConfig));
+  const result = await simpleLLMCall(apiConfig, messages, { temperature: 0.9 });
+  if (!result.content) return { lines: [] };
+  try {
+    const p = JSON.parse(extractJSON(result.content));
+    const lines = (p.lines || []).filter((l: { speaker?: string; text?: string }) => l?.speaker && l?.text)
+      .map((l: { speaker: string; text: string }) => ({ speaker: String(l.speaker), text: String(l.text) }))
+      .slice(0, 10);
+    return { lines };
+  } catch {
+    return { lines: [] };
+  }
+}
 
 export async function generateEnding(ctx: DMContext, apiConfig: ApiConfig): Promise<EndingResult> {
   const userMsg = buildDMUserMsg(ctx);
