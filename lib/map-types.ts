@@ -452,6 +452,7 @@ export type Declaration = {
   speech: string;     // what they say (to player/NPC/companion)
   action: string;     // what they do (physical action description)
   skillCheck?: string;  // fork: companion-chosen skill for this action (rolled by system)
+  splitTo?: string;    // fork 拆场: 目的地名称——该成员离队单独行动，队伍不知道那边发生什么
   emotion?: string;   // for display
   affinityDelta?: number;  // -3 to +3, how the character's affinity toward user changed
   failed?: boolean;        // true if LLM call failed (not a deliberate silence)

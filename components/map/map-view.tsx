@@ -581,13 +581,17 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       }
     }
 
-    // All agents follow the player on manual move
-    const movedAgents = save.agents.map(a => ({
-      ...a,
-      currentNodeId: targetNodeId,
-      currentNodeType: target.type,
-      discoveredNodes: [...new Set([...a.discoveredNodes, targetNodeId])],
-    }));
+    // Fork 拆场: only agents in the same scene follow the player — split members stay where they are
+    const agentsHere = save.agents.filter(a => a.currentNodeId === save.currentNodeId);
+    const movedAgents = save.agents.map(a => {
+      if (!agentsHere.includes(a)) return a;
+      return {
+        ...a,
+        currentNodeId: targetNodeId,
+        currentNodeType: target.type,
+        discoveredNodes: [...new Set([...a.discoveredNodes, targetNodeId])],
+      };
+    });
 
     const newSave: GameSave = {
       ...save,
@@ -890,7 +894,16 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             const myHoCode = save.boundLineHo?.[cid];
             const myLine = save.investigatorLines?.find(l => l.ho === myHoCode);
             const lineHint = myLine ? `【你的私人密档线】（只有你和KP知道，其他调查员一无所知——不要主动透露）\n入团前：${myLine.introStory || "（无）"}${myLine.relations.length ? `\n你的私人关系：${myLine.relations.map(r => `${r.npc}（${r.relation}）`).join("；")}` : ""}${myLine.events.length ? `\n你有专属剧情线，触发时机由KP安排（${myLine.events.map(e => e.trigger).join("、")}）——届时按你对该NPC的真实态度演出` : ""}` : undefined;
-            const decl = await companionDeclare(cid, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, declAgent?.affinity, {
+              // Fork 拆场: companion only sees messages from their own scene (locked always hidden, scene:X passes only for members at that node)
+            const locName = nodeMap.get(declAgent?.currentNodeId || save.currentNodeId)?.name || "";
+            const sceneFilteredLog = streamRef.current.filter(m => {
+              if (!m.audience) return true;
+              if (m.audience.includes("locked")) return false;
+              const sc = m.audience.find(a => a.startsWith("scene:"));
+              if (!sc) return true;
+              return sc === `scene:${locName}`;
+            });
+            const decl = await companionDeclare(cid, apiConfig, sceneFilteredLog, save.agents.length > 1 ? userIdentity : undefined, declAgent?.affinity, {
               ...(save.agentSecrets?.[cid] ? { secretHint: `【你的秘密】${save.agentSecrets[cid].content}（与真相的咬合点：${save.agentSecrets[cid].link}${save.agentSecrets[cid].informant ? `；${save.agentSecrets[cid].informant}知道更多——你可以私下找TA求证）` : "）"}\n这是只有你知道的事。平时言行可以露出破绽（欲言又止、回避话题、偷偷做小动作），但不要直接说破；何时摊牌由你决定。不要在宣言里向队友透露秘密内容，除非你决定此刻公开它。` } : {}),
               ...((personaHint || lineHint) ? { personaHint: [personaHint, lineHint].filter(Boolean).join("\n\n") } : {}),
               ...(memoryHint ? { memoryHint } : {}),
@@ -936,7 +949,31 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                 }
               }
             }
-            // Fork: one declCard per companion — say / do / dice in a compact card
+                    // Fork 拆场: companion leaves the party — real position change + visible departure note
+            if (decl.splitTo) {
+              const destNode = allNodes.find(n => n.name === decl.splitTo) || allNodes.find(n => n.name.includes(decl.splitTo!) || decl.splitTo!.includes(n.name));
+              if (destNode && destNode.id !== save.currentNodeId) {
+                save = {
+                  ...save,
+                  agents: save.agents.map(x => x.characterId === cid
+                    ? { ...x, currentNodeId: destNode.id, currentNodeType: destNode.type, discoveredNodes: [...new Set([...x.discoveredNodes, destNode.id])] }
+                    : x),
+                };
+                pushMessages({ id: mkId(), type: "system", text: `🚶 ${decl.speaker} 宣言离队，独自前往「${destNode.name}」——那边发生的事只有TA自己知道` });
+              }
+            }
+            // Fork 拆场: group members by current location (player + agents) for split narration
+          const groupsByLoc = new Map<string, string[]>();
+          groupsByLoc.set(save.currentNodeId, ["{{user}}"]);
+          for (const a of save.agents) {
+            const list = groupsByLoc.get(a.currentNodeId) || [];
+            list.push(charName(a.characterId));
+            groupsByLoc.set(a.currentNodeId, list);
+          }
+          const splitGroups = [...groupsByLoc.entries()].map(([nid, members]) => ({ where: nodeMap.get(nid)?.name || nid, members }));
+
+          // ── Phase 4: DM resolves all declarations ──
+          setLoadingPhase("dm");
             {
               const card: StreamMessage = {
                 id: mkId(),
@@ -955,6 +992,19 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               if (card.decl.say || card.decl.do || card.decl.dice) {
                 pushMessages(card);
                 streamRef.current = [...streamRef.current, card];
+              }
+            }
+            // Fork 拆场: companion leaves the party — real position change + visible departure note
+            if (decl.splitTo) {
+              const destNode = allNodes.find(n => n.name === decl.splitTo) || allNodes.find(n => n.name.includes(decl.splitTo!) || decl.splitTo!.includes(n.name));
+              if (destNode && destNode.id !== save.currentNodeId) {
+                save = {
+                  ...save,
+                  agents: save.agents.map(x => x.characterId === cid
+                    ? { ...x, currentNodeId: destNode.id, currentNodeType: destNode.type, discoveredNodes: [...new Set([...x.discoveredNodes, destNode.id])] }
+                    : x),
+                };
+                pushMessages({ id: mkId(), type: "system", text: `🚶 ${decl.speaker} 宣言离队，独自前往「${destNode.name}」——那边发生的事只有TA自己知道` });
               }
             }
           }
@@ -980,6 +1030,16 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         }
       }
 
+      // Fork 拆场: group members by current location (player + agents) for split narration
+      const groupsByLoc = new Map<string, string[]>();
+      groupsByLoc.set(save.currentNodeId, ["{{user}}"]);
+      for (const a of save.agents) {
+        const list = groupsByLoc.get(a.currentNodeId) || [];
+        list.push(charName(a.characterId));
+        groupsByLoc.set(a.currentNodeId, list);
+      }
+      const splitGroups = [...groupsByLoc.entries()].map(([nid, members]) => ({ where: nodeMap.get(nid)?.name || nid, members }));
+
       // ── Phase 4: DM resolves all declarations ──
       setLoadingPhase("dm");
       const allDeclarations: Declaration[] = [
@@ -993,6 +1053,9 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       dmCtx.director = save.director;
       dmCtx.recentJournal = saveRef.current.journal.map(j => j.text);
       dmCtx.revealedDossier = save.revealedDossier || [];   // fork: 密档划账随裁决上下文注入
+      dmCtx.splitGroups = splitGroups.length > 1 ? splitGroups : undefined;   // fork 拆场: 分场状态（>1 场时注入）
+      // Fork 拆场: remember where the player is this round — narration visibility splits along scene lines
+      const myLocationName = nodeMap.get(save.currentNodeId)?.name || "";
 
       const continuation = await resolveRound(dmCtx, allDeclarations, apiConfig);
 
@@ -1357,10 +1420,41 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         persistSave(timedSave);
       }
 
+      // Fork 拆场: split the narration by 【场：地点】sections — the player's scene goes to the
+      // main stream (scene-tagged), off-screen scenes become 🔒 locked entries (each member gets
+      // their own record → memoryHint next round; others stay blind until the ending reveal).
+      // Runs BEFORE the persist block below so locked entries survive the save.
+      if (splitGroups.length > 1 && continuation.dialogues[0]?.speaker === "narrator") {
+        const rawNarration = continuation.dialogues[0].text;
+        const segs = rawNarration.split(/(?=【场[：:])/g).map(s => s.trim()).filter(Boolean);
+        if (segs.length > 1) {
+          const mySegs: string[] = [];
+          for (const seg of segs) {
+            const m = seg.match(/^【场[：:](.+?)[】\]]/);
+            const segLoc = m ? m[1] : "";
+            const isMine = !segLoc || segLoc.includes(myLocationName) || myLocationName.includes(segLoc);
+            if (isMine) { mySegs.push(seg); continue; }
+            // off-screen scene → one locked entry per member (memoryHint matches by exact name)
+            const grp = splitGroups.find(g => segLoc.includes(g.where) || g.where.includes(segLoc));
+            const members = grp?.members.filter(x => x !== "{{user}}") || [];
+            for (const mem of members.length ? members : ["离队者"]) {
+              const entry = { id: `lock_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, who: mem, npc: segLoc, text: seg, day: formatGameTime(save.gameDay, save.gameTime) };
+              lockedLogRef.current = [...lockedLogRef.current, entry];
+              sideSceneEntries.push(entry);
+            }
+            pushMessages({ id: mkId(), type: "narration", text: `🔒〔另一场 · ${segLoc}〕${members.join("、") || "有人"} 独自经历了什么——结局揭晓前无人知晓`, audience: ["locked"] });
+          }
+          continuation.dialogues[0] = { ...continuation.dialogues[0], text: mySegs.join("\n\n") || "（你所在之处暂时平静。）" };
+        }
+      }
+
       // Fork 十期: fire cues from the resolve round too
       fireStageCues(continuation as EventScene & { cg?: string; bgm?: string });
 
-      // Push DM continuation to stream
+      // Push DM continuation to stream (player's scene carries an audience tag in split rounds —
+      // companions elsewhere can't see it in their context)
+      if (continuation.dialogues.length > 0) {
+        pushSceneToStream(continuation, splitGroups.length > 1 ? `scene:${myLocationName}` : undefined);
       if (continuation.dialogues.length > 0) {
         pushSceneToStream(continuation);
         setActiveEvent(continuation);

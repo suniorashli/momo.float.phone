@@ -911,6 +911,12 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 - 知情NPC被单独问到相关话题时，可以给出秘密的补充信息（推进剧情），也可以试探反问
 - 不要主动泄露任何调查员的秘密给他人——那是持有者的底牌，摊牌时机属于PL
 
+【分场演出】（仅当上下文存在[分场状态]块时生效）
+- 队伍分散在不同地点时，narration 必须按场分段：每段开头用【场：地点名】标记，只写该场内的人和事
+- 信息墙·铁律：A 场的人不知道 B 场发生的事——绝不把 B 场的所见所闻写进 A 场的段落；不同场的角色在场上相遇前互不知晓彼此的行动
+- 各场并行推进，每场都要有内容（哪怕只是环境与不安）；最后一段用一两句写全队视角的时间流逝
+- choices/hints 只针对 {{user}} 所在场
+
 【私聊幕·KP导演】（仅当上下文存在[调查员秘密]块时生效）
 - 场景里出现自然的私下契机时（某人被单独留下/主动避开众人/知情NPC欲言又止），在 side_scenes 数组输出最多1幕：{who:调查员名, npc:NPC名, intent:契机一句话, summary:这场私聊发生了什么（2-3句，你自己写）}
 - who 可以是 {{user}} 或同伴名。私聊内容其他调查员不知道——summary 只进锁档，不当场公开
@@ -1018,6 +1024,8 @@ export type DMContext = {
   assetManifest?: string;
   // Fork 十二期: player's module-era persona (KP narrates the player's era identity)
   playerPersona?: string;
+  // Fork 拆场: party split — per-location groups; KP narrates each scene separately, no cross-scene leaks
+  splitGroups?: { where: string; members: string[] }[];
 };
 
 /** Truncate an array of strings from the oldest, keeping newest within token budget */
@@ -1099,6 +1107,9 @@ ${ctx.investigatorLinesHint}` : "";
   // Fork 十期: asset cue manifest (one page of names)
   const assetBlock = ctx.assetManifest ? `\n[演出资源清单]（只有名字；剧情对应时输出字段触发前端展示，绝不描述图片内容）
 ${ctx.assetManifest}` : "";
+  // Fork 拆场: party-split state — where each group is, who's in it
+  const splitBlock = ctx.splitGroups && ctx.splitGroups.length > 1 ? `\n[分场状态]（队伍分散——按场分段演出，信息墙：各场互不知晓，见【分场演出】）
+${ctx.splitGroups.map(g => `- ${g.where}：${g.members.join("、")}`).join("\n")}` : "";
   // Fork: 密档划账——按 revealedDossier 给每条密档标〔已公开〕（KP 不得重复卖出/矛盾）
   const rv = ctx.revealedDossier || [];
   const markRv = (s: string) => rv.some(r => r && (s.includes(r.slice(0, 12)) || r.includes(s.slice(0, 12)))) ? "〔已公开〕" : "";
@@ -1169,7 +1180,7 @@ ${(ctx.mainQuestStages || []).map((s, i) => {
 
   return `# 世界：${ctx.worldLore}
 ${ctx.kpStyle ? `\n【叙述风格指令】（KP必须遵守）\n${ctx.kpStyle}\n` : ""}${mapBlock}
-${dmBlock}${dirBlock}${actsBlock}${questBlock}${pacingHint}
+${dmBlock}${dirBlock}${actsBlock}${questBlock}${pacingHint}${splitBlock}
 
 ${ctx.combat ? `\n# 战斗轮
 第${ctx.combat.round}轮 · 先攻顺序：${ctx.combat.initiative.join(" → ")}
@@ -1216,7 +1227,7 @@ SAN：理智值（0-99）。目睹恐怖、阅读禁书、直面神话存在都�
 journal字段：用第三人称记录（用 {{user}} 而不是"我"或"你"）。
 日志：${truncateByTokenBudget(ctx.recentJournal, tokenConfig.journalTokenBudget).join("；")}
 ${ctx.previousDialogue ? `\n对话历史：\n${truncateByTokenBudget(ctx.previousDialogue.split("\n"), tokenConfig.dialogueTokenBudget).join("\n")}` : ""}
-${ctx.declarations?.length ? `\n# 本轮声明\n${ctx.declarations.map(d => `${d.speaker}：\n  说：「${d.speech}」\n  做：${d.action}`).join("\n\n")}` : ""}`;
+${ctx.declarations?.length ? `\n# 本轮声明${ctx.splitGroups?.length ? `（当前分场：${ctx.splitGroups.map(g => `${g.where}→${g.members.join("、")}`).join("；")}）` : ""}\n${ctx.declarations.map(d => `${d.speaker}${d.splitTo ? `（离队前往：${d.splitTo}）` : ""}：\n  说：「${d.speech}」\n  做：${d.action}`).join("\n\n")}` : ""}`;
 }
 
 export async function dmScene(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneResult> {
@@ -1496,6 +1507,7 @@ export async function companionDeclare(
         action: p.action || "跟随队伍",
         emotion: p.emotion || "neutral",
         skillCheck: p.skill_check || p.skillCheck || undefined,
+        splitTo: (p.split_to || p.splitTo) ? String(p.split_to || p.splitTo) : undefined,
         affinityDelta: typeof p.affinity === "number" ? Math.max(-3, Math.min(3, Math.round(p.affinity))) : 0,
       };
     } catch {
@@ -1573,6 +1585,7 @@ async function buildCompanionDeclarePromptPayload(
 2) 做：你的行动宣言（调查、搜索、攀爬、攻击、跟随、原地观察……任选；也可以只是听和想，不行动）
 3) 如果你的行动需要检定，在skill_check字段写你用的技能名（侦查/聆听/图书馆使用/心理学/潜行/手枪/急救等，或属性名如意志/幸运）；不需要检定就留空
 4) 想清楚你为什么这么做——按你的人设和当前处境行动，不要人云亦云
+5) 若你决定离开队伍单独行动（去别的地方调查、单独去找某人、深夜独自外出……），在 split_to 字段写目的地名称——你会离队前往那里，那边的遭遇只有你自己知道；split_to 留空 = 留在队伍里行动
 
 【宣而不演·铁律】你只宣告意图，绝不演出结果：
 - 只说"我要翻开那本登记簿查昨夜的记录"，绝不说"翻开后我发现……"——结果由 KP 在所有人宣言后统一演出
