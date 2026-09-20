@@ -296,6 +296,23 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       const introSource = `${skeleton.world.name}：${skeleton.world.lore.slice(0, 260)}`;
       // Fork: table-feel — the KP opens the module and hands out identity cards one by one
       pushMessages({ id: mkId(), type: "narration", text: `🎲 KP 翻开《${skeleton.world.name}》的模组，把几张空白身份卡摆在桌上——"稍等，各位的调查员身份还在拟写。"` });
+      // Fork: HO 密档自动绑定——玩家=__player__，同伴按顺序；每人的导入剧情只发给自己（锁档受众）
+      if (save.investigatorLines?.length) {
+        const bound: Record<string, string> = {};
+        save.investigatorLines.forEach((l, i) => {
+          const cid = i === 0 ? "__player__" : saveRef.current.agents[i - 1]?.characterId;
+          if (cid) bound[cid] = l.ho;
+        });
+        persistSave({ ...saveRef.current, boundLineHo: bound });
+        const myHo = bound["__player__"];
+        const myLine = save.investigatorLines.find(l => l.ho === myHo);
+        if (myLine) {
+          pushMessages({
+            id: mkId(), type: "narration", audience: ["locked"],
+            text: `🔒〔你的私人密档 · ${myHo}〕${myLine.introStory ? `入团前：${myLine.introStory}` : ""}${myLine.relations.length ? `\n你的私人关系：${myLine.relations.map(r => `${r.npc}（${r.relation}）`).join("；")}` : ""}${myLine.events.length ? `\n你还有专属剧情线（${myLine.events.length} 段，触发时机由 KP 安排）——其他调查员对此一无所知。` : ""}`,
+          });
+        }
+      }
       // Player persona first → the review modal IS your card being handed over
       try {
         const persona = await importInvestigator(myName, `（用户本人）${introSource}`, skeleton, save.mySecret, apiConfig);
@@ -612,6 +629,18 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           ...(save.mySecret ? [{ who: userIdentity?.name || "你", secret: save.mySecret }] : []),
           ...Object.entries(save.agentSecrets || {}).map(([cid, s]) => ({ who: charName(cid), secret: s })),
         ],
+        // Fork: HO 密档——导入剧情与个人线（KP 可见全部；含绑定角色名映射与事件触发表）
+        ...(save.investigatorLines?.length ? {
+          investigatorLinesHint: save.investigatorLines.map(l => {
+            const holder = l.boundCharacterId === "__player__" ? (userIdentity?.name || "你") : charName(l.boundCharacterId || "");
+            const bind = holder ? `（${holder}）` : "（未绑定）";
+            return [
+              `${l.ho}${bind} 导入剧情：${l.introStory}`,
+              ...(l.relations.length ? [`私人关系：${l.relations.map(r => `${r.npc}=${r.relation}`).join("；")}`] : []),
+              ...(l.events.length ? [`个人线事件（按触发条件演出，只有${holder || l.ho}在场时才发生；触发时走私聊幕，不当众展开）：${l.events.map(e => `[${e.trigger}] ${e.summary}`).join(" ⟂ ")}`] : []),
+            ].join("\n");
+          }).join("\n\n"),
+        } : {}),
         acts: skeleton.acts,
         currentAct: save.currentAct ?? 0,
         assetManifest: buildAssetManifest(assets),
@@ -776,9 +805,13 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             const ownTalks = (save.lockedLog || []).filter(e => e.who === (characters.find(c => c.id === cid)?.name)).slice(-4);
             const memoryHint = ownTalks.length ? `【你的私下记忆】（别人不知道你知道这些）\n${ownTalks.map(e => `${e.day} 你与${e.npc || "某人"}私下谈过：${e.text}`).join("\n")}\n这些记忆影响你的言行（欲言又止/改变态度/私下行动），但不要主动透露内容。` : undefined;
             const personaHint = declAgent?.persona ? `【你的模组内人设】（以此身份行动，覆盖角色卡的现代设定）\n时代：${declAgent.persona.era}\n身份：${declAgent.persona.occupation}——${declAgent.persona.background}\n性格不变的部分：${declAgent.persona.keepTraits}\n${declAgent.persona.changes ? `时代调整：${declAgent.persona.changes}\n` : ""}你的言行、物品、习惯都必须属于这个时代，不要出现时代外元素。` : undefined;
+            // Fork: 该同伴的 HO 密档线（只有TA和KP知道；入团前剧情+私人关系+事件预告）
+            const myHoCode = save.boundLineHo?.[cid];
+            const myLine = save.investigatorLines?.find(l => l.ho === myHoCode);
+            const lineHint = myLine ? `【你的私人密档线】（只有你和KP知道，其他调查员一无所知——不要主动透露）\n入团前：${myLine.introStory || "（无）"}${myLine.relations.length ? `\n你的私人关系：${myLine.relations.map(r => `${r.npc}（${r.relation}）`).join("；")}` : ""}${myLine.events.length ? `\n你有专属剧情线，触发时机由KP安排（${myLine.events.map(e => e.trigger).join("、")}）——届时按你对该NPC的真实态度演出` : ""}` : undefined;
             const decl = await companionDeclare(cid, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, declAgent?.affinity, {
               ...(save.agentSecrets?.[cid] ? { secretHint: `【你的秘密】${save.agentSecrets[cid].content}（与真相的咬合点：${save.agentSecrets[cid].link}${save.agentSecrets[cid].informant ? `；${save.agentSecrets[cid].informant}知道更多——你可以私下找TA求证）` : "）"}\n这是只有你知道的事。平时言行可以露出破绽（欲言又止、回避话题、偷偷做小动作），但不要直接说破；何时摊牌由你决定。不要在宣言里向队友透露秘密内容，除非你决定此刻公开它。` } : {}),
-              ...(personaHint ? { personaHint } : {}),
+              ...((personaHint || lineHint) ? { personaHint: [personaHint, lineHint].filter(Boolean).join("\n\n") } : {}),
               ...(memoryHint ? { memoryHint } : {}),
             });
 

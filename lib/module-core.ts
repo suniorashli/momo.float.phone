@@ -1,10 +1,10 @@
 // lib/module-core.ts
-// Fork 九期: sectioned module import — chunked extraction pipeline + code-only skeleton assembly.
+// Fork 九期: sectioned import — chunked extraction pipeline + code-only skeleton assembly.
 // Solves: one-shot world-gen LLM pressure (retry costs everything) + large-module import limits.
 
 import type { ApiConfig } from "./settings-types";
 import { simpleLLMCall } from "./api-helpers";
-import type { ModuleCore, ModuleAct, WorldSkeleton, RichRegion, WorldNPC, QuestLine, EncounterSeed } from "./map-types";
+import type { ModuleCore, ModuleAct, WorldSkeleton, RichRegion, WorldNPC, QuestLine, EncounterSeed, InvestigatorLine } from "./map-types";
 import type { DMDossier } from "./map-types";
 
 // ── Chunking ──
@@ -71,7 +71,7 @@ const TRUTH_EXTRACT_PROMPT = `你是TRPG模组的资料整理员。从给定文�
 [隐藏真相]这个故事的底牌是什么（2-4句）
 [背景设定]时代、地点、世界观的必要背景（2-4句）
 [NPC秘密1]某NPC名：TA隐瞒的事（有几条写几条，编号递增）
-[伏笔1]早期应当埋下的线索（有几条写几条）
+[伏笔1]早期应当埋下的线索（有几条写几条，编号递增）
 [反转]故事中段的关键转折（文本有才写）
 [结局]故事可能如何收束（文本有才写）
 
@@ -83,11 +83,25 @@ const ACT_EXTRACT_PROMPT = `你是TRPG模组的资料整理员。从给定文本
 [幕N标题]这一幕的名字（2-6字）
 [幕N剧情]这一幕发生什么、调查员要做什么、真相推进到哪一步（3-5句，KP视角）
 [幕N地点]涉及的地点，顿号分隔（只写文本明确提到的）
-[幕N线索]这一幕应揭示的关键信息/线索（有几条写几条）
+[幕N线索]这一幕应揭示的关键信息/线索（有几条写几条，编号递增）
 
 要求：如果文本已经明确分章/分幕/分阶段，严格按它的结构；如果没有，按剧情推进逻辑分成3-5幕；每幕的剧情必须与前后幕衔接（后幕依赖前幕的发现）。`;
 
-// ── Per-chunk extraction calls ──
+// ── Investigator private lines (fork: HO导入剧情/个人线 → 密档) ──
+
+const HO_LINE_EXTRACT_PROMPT = `你是TRPG模组的资料整理员。文本里包含若干调查员（HO）各自的导入剧情与个人线事件——这些是每个HO的私人密档，其他调查员不知道。请按HO分组提取。
+
+只输出标签块纯文本，不要JSON：
+[HO]HO代号（如HO1、HO2；用文本里的代号）
+[导入剧情]TA入团前的故事摘要（3-6句：TA与哪些NPC是什么关系、发生了什么关键事件、有什么约定或承诺——这些是TA的既定背景）
+[关系1]NPC名：关系描述（每个相关NPC一组，编号递增；只写该HO的私人关系）
+[事件1]触发条件|事件摘要（格式：Day1夜晚/见到尤金之后/XX死后 等触发时机 | 3-8句事件内容——TA会经历什么、NPC会对TA说什么/做什么、可能的选项与分支）
+（事件有几条写几条，编号递增）
+
+要求：
+- 忠实于文本，禁止编造；文本没有的HO不要列
+- 事件摘要要保留原文的关键台词感（如NPC的语气、态度转变点）
+- 区分"导入剧情"（入团前）与"个人线事件"（入团后按条件触发）`;
 
 export type ExtractProgress = { step: string; done: number; total: number };
 
@@ -198,6 +212,60 @@ export async function extractActsFromText(
   return acts;
 }
 
+// ── Investigator private lines: extraction (fork) ──
+
+export async function extractInvestigatorLines(
+  text: string,
+  apiConfig: ApiConfig,
+  onProgress?: (p: ExtractProgress) => void,
+): Promise<InvestigatorLine[]> {
+  const chunks = chunkText(text, 8000);
+  const all: InvestigatorLine[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    onProgress?.({ step: `HO剧情提取 ${i + 1}/${chunks.length}`, done: i, total: chunks.length });
+    const prevNote = all.length ? `（已提取的HO：${all.map(l => l.ho).join("、")}——已列过的HO若在新文本有补充事件可合并，不要重复其导入剧情）` : "";
+    const result = await simpleLLMCall(apiConfig, [
+      { role: "system", content: HO_LINE_EXTRACT_PROMPT + prevNote },
+      { role: "user", content: `模组文本（第${i + 1}/${chunks.length}部分）：\n${chunks[i]}` },
+    ]);
+    if (!result.content) continue;
+    const f = taggedToFieldMap(result.content);
+    // Each HO block: [HO]/[HO1]… keys; suffix "" or digit-string
+    const hoKeys = Object.keys(f).filter(k => /^HO\d*$/.test(k));
+    const suffixes = hoKeys.map(k => k.replace(/^HO/, ""));
+    for (const suf of suffixes) {
+      const ho = f[`HO${suf}`]?.trim();
+      if (!ho) continue;
+      const intro = f[`导入剧情${suf}`] || "";
+      const relations = Object.keys(f)
+        .filter(k => new RegExp(`^关系${suf}$|^关系${suf}\\d+$`).test(k))
+        .map(k => f[k] || "")
+        .filter(Boolean)
+        .map(r => {
+          const m = r.match(/^(.+?)[:：]\s*(.+)$/);
+          return m ? { npc: m[1].trim(), relation: m[2].trim() } : { npc: r.slice(0, 20), relation: r };
+        });
+      const events = Object.keys(f)
+        .filter(k => new RegExp(`^事件${suf}$|^事件${suf}\\d+$`).test(k))
+        .map(k => f[k] || "")
+        .filter(Boolean)
+        .map(e => {
+          const idx = e.indexOf("|");
+          return idx > 0 ? { trigger: e.slice(0, idx).trim(), summary: e.slice(idx + 1).trim() } : { trigger: "", summary: e };
+        });
+      const existing = all.find(l => l.ho === ho);
+      if (existing) {
+        if (!existing.introStory && intro) existing.introStory = intro;
+        existing.relations.push(...relations.filter(r => !existing.relations.some(x => x.npc === r.npc)));
+        existing.events.push(...events);
+      } else if (intro || relations.length || events.length) {
+        all.push({ ho, introStory: intro, relations, events });
+      }
+    }
+  }
+  return all;
+}
+
 // ── Code-only assembly (no LLM) ──
 
 const REGION_TYPES = ["主城", "城镇", "荒野", "废墟", "禁区"];
@@ -290,7 +358,7 @@ function findNpcAt(core: ModuleCore, loc: ModuleCore["locations"][number]) {
   return core.npcs.find(n => n.location && (n.location === loc.name || n.location.includes(loc.name) || loc.name.includes(n.location)));
 }
 
-function deriveLocationsFromNpcs(core: ModuleCore): ModuleCore["locations"] {
+function deriveLocationsFromNpcs(core: ModuleCore): ModuleCore["locations"][number][] {
   const set = new Map<string, ModuleCore["locations"][number]>();
   for (const n of core.npcs) {
     if (n.location && !set.has(n.location)) set.set(n.location, { name: n.location, type: set.size === 0 ? "l1" : "l2" });

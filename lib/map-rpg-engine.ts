@@ -999,6 +999,8 @@ export type DMContext = {
   rulesEdition?: RulesEdition;
   // Fork 八期A: secret-party — KP omniscience (all secrets, incl. who guards what)
   partySecrets?: { who: string; secret: PersonalSecret }[];
+  // Fork: HO 密档——导入剧情/私人关系/个人线事件（KP全知；触发时走私聊幕隔离演出）
+  investigatorLinesHint?: string;
   // Fork 八期B: locked private-talk log (for ending branch adjudication; formatted strings)
   lockedLogSummary?: string[];
   // Fork 九期B: staged acts — current act + unlocked acts (later acts' truth NEVER enters the prompt)
@@ -1085,10 +1087,13 @@ function buildDMUserMsg(ctx: DMContext): string {
 ${ctx.partySecrets.map(s => `${s.who}：${s.secret.content}（咬合点：${s.secret.link}${s.secret.informant ? `；知情者：${s.secret.informant}` : ""}）`).join("\n")}` : "";
   const lockedBlock = ctx.lockedLogSummary && ctx.lockedLogSummary.length > 0 ? `\n[锁档私聊]（发生过但其他调查员不知情的私下交谈）
 ${ctx.lockedLogSummary.join("\n")}` : "";
+  // Fork: HO 密档块（导入剧情+个人线事件表；KP 按触发条件演出，隔离受众）
+  const hoLinesBlock = ctx.investigatorLinesHint ? `\n[调查员密档线]（各HO的导入剧情与个人线——除本人外其他调查员不知道；事件按触发条件发生，发生时在side_scenes走私聊幕（who=该HO），不当众展开）
+${ctx.investigatorLinesHint}` : "";
   // Fork 十期: asset cue manifest (one page of names)
   const assetBlock = ctx.assetManifest ? `\n[演出资源清单]（只有名字；剧情对应时输出字段触发前端展示，绝不描述图片内容）
 ${ctx.assetManifest}` : "";
-  const dmBlock = dm ? `${secretsBlock}${lockedBlock}${assetBlock}\n[密档]
+  const dmBlock = dm ? `${secretsBlock}${lockedBlock}${assetBlock}${hoLinesBlock}\n[密档]
 真相：${dm.hiddenTruth}
 ${ctx.npcSecret ? `当前NPC秘密：${ctx.npcSecret}` : ""}
 NPC秘密：${Object.entries(dm.npcSecrets).map(([k, v]) => `${k}→${v}`).join("；")}

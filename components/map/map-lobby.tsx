@@ -26,10 +26,10 @@ import {
   type AdventureInteractionConfig,
 } from "@/lib/map-storage";
 import { generateWorldSkeleton, DEFAULT_WORLD_GEN_PROMPT, DEFAULT_DM_SCENE_PROMPT, DEFAULT_DM_RESOLVE_PROMPT, DEFAULT_DM_ENDING_PROMPT, DEFAULT_ADVENTURE_SUMMARY_PROMPT } from "@/lib/map-rpg-engine";
-import { extractNpcsFromText, extractTruthFromText, extractActsFromText, assembleSkeletonFromCore } from "@/lib/module-core";
+import { extractNpcsFromText, extractTruthFromText, extractActsFromText, assembleSkeletonFromCore, extractInvestigatorLines } from "@/lib/module-core";
 // (investigator import moved to map-view first-entry lazy import — lobby no longer blocks on it)
 import { resolveUserIdentity } from "@/lib/settings-storage";
-import type { ModuleCore, ModuleAct } from "@/lib/map-types";
+import type { ModuleCore, ModuleAct, InvestigatorLine } from "@/lib/map-types";
 import { generateMap, type GeoJSONData } from "@/lib/map-engine";
 import { registerAssetFiles, putAssetBlob, deleteAssetBlob } from "@/lib/stage-assets";
 import type { StageAsset } from "@/lib/map-types";
@@ -132,6 +132,9 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   const [secNpcText, setSecNpcText] = useState("");
   const [secTruthText, setSecTruthText] = useState("");
   const [secActText, setSecActText] = useState("");
+  // Fork: HO 导入剧情/个人线文本（第四栏 → 提取为 InvestigatorLine 密档）
+  const [secHoText, setSecHoText] = useState("");
+  const [hoLines, setHoLines] = useState<InvestigatorLine[] | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [extractProgress, setExtractProgress] = useState("");
   const [moduleCore, setModuleCore] = useState<ModuleCore | null>(null);
@@ -177,6 +180,10 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
       }
       if (secActText.trim()) {
         core.acts = await extractActsFromText(secActText, apiConfig, p => setExtractProgress(p.step));
+      }
+      // Fork: HO 导入剧情/个人线 → 密档（提取后单独审校）
+      if (secHoText.trim()) {
+        setHoLines(await extractInvestigatorLines(secHoText, apiConfig, p => setExtractProgress(p.step)));
       }
       if (!core.npcs.length && !core.truth && !core.acts.length) throw new Error("三个栏目都提取失败，请检查 API 配置或重试");
       setModuleCore(core);
@@ -386,6 +393,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
         let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
         // Fork: persona import deferred to first world entry (one LLM call per person, non-blocking here)
         save.personaPending = true;
+        if (hoLines?.length) save.investigatorLines = hoLines;   // fork: HO 密档随存档进世界
         for (const cid of charIdsSnapshot) {
           const ch = characters.find(c => c.id === cid);
           save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets, undefined);
@@ -449,6 +457,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
       let save = createInitialSave(world.id, startNode, edition, skeleton.personalSecrets);
       // Fork: persona import deferred to first world entry (one LLM call per person, non-blocking here)
       save.personaPending = true;
+      if (hoLines?.length) save.investigatorLines = hoLines;   // fork: HO 密档随存档进世界
       for (const cid of charIdsSnapshot) {
         const ch = characters.find(c => c.id === cid);
         save = addAgentToSave(save, cid, ch?.personality || "", edition, skeleton.personalSecrets, undefined);
@@ -802,6 +811,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                   { label: "NPC / 人物", text: secNpcText, setter: setSecNpcText, hint: "人物介绍、NPC列表" },
                   { label: "真相 / 背景", text: secTruthText, setter: setSecTruthText, hint: "密档、背景设定、真相" },
                   { label: "跑团流程", text: secActText, setter: setSecActText, hint: "分幕流程、剧情结构" },
+                  { label: "HO 剧情", text: secHoText, setter: setSecHoText, hint: "各HO的导入剧情与个人线" },
                 ] as const).map(sec => (
                   <div key={sec.label} style={{ display: "flex", gap: 6, alignItems: "center" }}>
                     <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.4)", width: 68, flexShrink: 0 }}>{sec.label}</span>
@@ -840,6 +850,29 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
               {extractProgress && (
                 <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(200,200,140,0.7)", marginTop: 6, fontFamily: "monospace" }}>{extractProgress}</div>
               )}
+              {/* Fork: HO 密档审校（导入剧情/关系/事件，创建世界时随核心包进存档） */}
+              {hoLines && hoLines.length > 0 && (
+                <div style={{ marginTop: 10, borderTop: "1px solid rgba(200,160,100,0.12)", paddingTop: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(200,160,100,0.5)", letterSpacing: "0.08em" }}>🎭 HO 密档（{hoLines.length} 位调查员的私人剧情）</span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 180, overflowY: "auto" }}>
+                    {hoLines.map((l, i) => (
+                      <div key={l.ho + i} style={{ padding: "6px 8px", borderRadius: 7, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(150,120,220,0.15)" }}>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3 }}>
+                          <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", fontWeight: 700, color: "rgba(190,170,240,0.95)" }}>{l.ho}</span>
+                          <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.3)" }}>
+                            {l.relations.length ? `关系：${l.relations.map(r => r.npc).join("、")}` : "无已提取关系"} · 事件 {l.events.length} 条
+                          </span>
+                          <button type="button" onClick={() => setHoLines(hoLines.filter((_, j) => j !== i))}
+                            style={{ background: "none", border: "none", color: "rgba(255,100,80,0.5)", cursor: "pointer", fontSize: "calc(11px*var(--app-text-scale,1))", marginLeft: "auto", padding: 2 }}>✕</button>
+                        </div>
+                        {l.introStory && <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.45)", lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{l.introStory}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {/* Core pack export/import (fork 十二期 — reuse reviewed extraction) */}
               <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                 <button type="button" onClick={async () => {
@@ -861,7 +894,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                     return { kind: asset.kind, name: asset.name, boundTo: asset.boundTo, fileName: asset.fileName, note: asset.note, dataBase64: btoa(bin), mime: payload.type || file.type };
                   }));
                   // Fork slim: gzip the whole JSON (base64 inflates ~33%; gzip recovers it and more)
-                  const json = JSON.stringify({ ...moduleCore, ...(stageAssets.length ? { stageAssets } : {}) });
+                  const json = JSON.stringify({ ...moduleCore, ...(stageAssets.length ? { stageAssets } : {}), ...(hoLines?.length ? { investigatorLines: hoLines } : {}) });
                   let blob: Blob;
                   let fname = `module-core-${Date.now()}.json`;
                   const gz = await gzipText(json);
@@ -902,6 +935,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                         const core = JSON.parse(text) as ModuleCore;
                         if (!Array.isArray(core.npcs) || !Array.isArray(core.acts)) throw new Error("格式不符");
                         setModuleCore(core);
+                        setHoLines(Array.isArray(core.investigatorLines) && core.investigatorLines.length ? core.investigatorLines : null);
                         // Fork: carried stage assets become staged Files (rewritten to IDB on world create)
                         if (Array.isArray(core.stageAssets) && core.stageAssets.length) {
                           const staged = await Promise.all(core.stageAssets.map(async sa => {

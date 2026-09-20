@@ -159,6 +159,16 @@ export type ModuleAct = {
   stageBrief: string;     // 主线阶段简介（映射到 mainQuest stage）
 };
 
+// ── Investigator private lines (fork: HO 导入剧情/个人线密档 — only the HO themself and the KP know) ──
+export type InvestigatorLineEvent = { trigger: string; summary: string };   // trigger 如 "Day1夜晚"/"尤金死后"
+export type InvestigatorLine = {
+  ho: string;                                    // HO 代号或名字（HO1 等）
+  introStory: string;                            // 导入剧情摘要（关键事实：认识谁、什么关系、约定）
+  relations: { npc: string; relation: string }[]; // 与 NPC 的私人关系
+  events: InvestigatorLineEvent[];               // 个人线事件（按天/条件触发，KP 演出）
+  boundCharacterId?: string;                     // 绑定角色卡 id；"__player__" = 玩家本人；空 = 未绑定
+};
+
 // ── Module core pack (fork 九期: sectioned import → review → share; 十二期: export/import) ──
 export type ModuleCore = {
   npcs: { name: string; personality: string; role: string; location?: string }[];
@@ -167,6 +177,7 @@ export type ModuleCore = {
   acts: ModuleAct[];
   rawImported?: { npcText: string; truthText: string; actText: string };  // 分栏原文（重提取用）
   stageAssets?: { kind: "portrait" | "cg" | "bgm"; name: string; boundTo?: string; fileName: string; note?: string; dataBase64: string; mime: string }[];  // fork: 演出资源随包分享（base64 内嵌，导入时写入 IndexedDB）
+  investigatorLines?: InvestigatorLine[];   // fork: HO 导入剧情/个人线（密档，随包分享）
 };
 
 // ── Investigator import (fork 十一期: persona adapted to the module era/setting) ──
@@ -314,6 +325,8 @@ export type GameSave = {
   myPersona?: InvestigatorPersona;               // fork 十二期: 玩家的模组内人设（首次进入时审校确认）
   personaPending?: boolean;                      // fork: 调查员导入延迟到首次进入世界时执行（每人一次LLM，创建世界不再阻塞等待）
   agentSecrets?: Record<string, PersonalSecret>; // characterId → 同伴的秘密（KP 可见；用户结局前不可见，幕后页揭晓）
+  investigatorLines?: InvestigatorLine[];        // fork: HO 导入剧情/个人线密档（随核心包/世界导入；KP 与本人可见）
+  boundLineHo?: Record<string, string>;          // fork: characterId → HO 代号（"__player__"=玩家本人）；绑定后个人线才注入
   lockedLog?: { id: string; who: string; npc?: string; text: string; day: string }[]; // 锁档私聊流（结局揭晓；八期B 填充）
   // ── fork 九期B: staged acts ──
   currentAct?: number;             // 当前幕索引（skeleton.acts[currentAct]）
