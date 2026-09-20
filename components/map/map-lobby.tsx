@@ -33,6 +33,50 @@ import type { ModuleCore, ModuleAct } from "@/lib/map-types";
 import { generateMap, type GeoJSONData } from "@/lib/map-engine";
 import { registerAssetFiles, putAssetBlob, deleteAssetBlob } from "@/lib/stage-assets";
 import type { StageAsset } from "@/lib/map-types";
+
+// Fork: pack slimming helpers — image re-encode + gzip, all client-side, no deps
+async function compressImageForPack(file: File, maxDim: number): Promise<Blob> {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * scale));
+    const h = Math.max(1, Math.round(bmp.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return file;
+    ctx.drawImage(bmp, 0, 0, w, h);
+    const tryBlob = (type: string, q?: number) => new Promise<Blob | null>(res => canvas.toBlob(b => res(b), type, q));
+    const webp = await tryBlob("image/webp", 0.85);
+    if (webp && webp.type === "image/webp" && webp.size < file.size) return webp;
+    // Safari lacks canvas WebP encoding — JPEG for CG (opaque art), resized PNG keeps portrait transparency
+    if (/^cg[_\-/]/i.test(file.name) || file.type === "image/jpeg") {
+      const jpg = await tryBlob("image/jpeg", 0.85);
+      if (jpg && jpg.size < file.size) return jpg;
+    }
+    const png = await tryBlob("image/png");
+    if (png && png.size < file.size) return png;
+    return file;
+  } catch { return file; }
+}
+async function gzipText(text: string): Promise<Uint8Array | null> {
+  try {
+    if (typeof CompressionStream === "undefined") return null;
+    const cs = new CompressionStream("gzip");
+    const writer = cs.writable.getWriter();
+    writer.write(new TextEncoder().encode(text));
+    writer.close();
+    const buf = await new Response(cs.readable).arrayBuffer();
+    return new Uint8Array(buf);
+  } catch { return null; }
+}
+async function gunzipBytes(bytes: Uint8Array): Promise<string> {
+  const ds = new DecompressionStream("gzip");
+  const writer = ds.writable.getWriter();
+  writer.write(bytes);
+  writer.close();
+  return await new Response(ds.readable).text();
+}
 import { loadApiConfigs, loadBindingConfig, resolveBinding } from "@/lib/settings-storage";
 import type { MapWorld, GameSave } from "@/lib/map-types";
 import { Toggle } from "@/components/ui/form";
@@ -800,18 +844,36 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
               <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                 <button type="button" onClick={async () => {
                   if (!moduleCore) return;
-                  // Fork: embed staged stage assets (blobs → base64) so the pack is fully self-contained
+                  // Fork slim: re-encode images (WebP/JPEG q0.85, portraits ≤1024px, CG ≤1600px) before embedding
+                  const audioWarn = coreAssets.filter(x => x.asset.kind === "bgm" && x.file.size > 8 * 1024 * 1024);
+                  if (audioWarn.length) {
+                    const go = window.confirm(`有 ${audioWarn.length} 个音频超过 8MB（${audioWarn.map(x => x.asset.name).join("、")}）——包会很大。建议先用 128kbps MP3 压缩。仍要导出吗？`);
+                    if (!go) return;
+                  }
                   const stageAssets = await Promise.all(coreAssets.map(async ({ asset, file }) => {
-                    const buf = await file.arrayBuffer();
+                    let payload: Blob = file;
+                    if (asset.kind === "portrait") payload = await compressImageForPack(file, 1024);
+                    else if (asset.kind === "cg") payload = await compressImageForPack(file, 1600);
+                    const buf = await payload.arrayBuffer();
                     const bytes = new Uint8Array(buf);
                     let bin = "";
                     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-                    return { kind: asset.kind, name: asset.name, boundTo: asset.boundTo, fileName: asset.fileName, note: asset.note, dataBase64: btoa(bin), mime: file.type };
+                    return { kind: asset.kind, name: asset.name, boundTo: asset.boundTo, fileName: asset.fileName, note: asset.note, dataBase64: btoa(bin), mime: payload.type || file.type };
                   }));
-                  const blob = new Blob([JSON.stringify({ ...moduleCore, ...(stageAssets.length ? { stageAssets } : {}) }, null, 2)], { type: "application/json" });
+                  // Fork slim: gzip the whole JSON (base64 inflates ~33%; gzip recovers it and more)
+                  const json = JSON.stringify({ ...moduleCore, ...(stageAssets.length ? { stageAssets } : {}) });
+                  let blob: Blob;
+                  let fname = `module-core-${Date.now()}.json`;
+                  const gz = await gzipText(json);
+                  if (gz && gz.byteLength < json.length) {
+                    blob = new Blob([gz], { type: "application/gzip" });
+                    fname = `module-core-${Date.now()}.json.gz`;
+                  } else {
+                    blob = new Blob([json], { type: "application/json" });
+                  }
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement("a");
-                  a.href = url; a.download = `module-core-${Date.now()}.json`; a.click();
+                  a.href = url; a.download = fname; a.click();
                   URL.revokeObjectURL(url);
                 }} style={{
                   flex: 1, padding: "7px 0", borderRadius: 7, border: "1px solid var(--c-adv-input-border, rgba(200,160,100,0.15))", background: "transparent",
@@ -822,13 +884,22 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                   color: "rgba(200,160,100,0.75)", fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", textAlign: "center",
                 }}>
                   ⬇ 导入核心包
-                  <input type="file" accept=".json,application/json" hidden onChange={e => {
+                  <input type="file" accept=".json,.gz,application/json,application/gzip" hidden onChange={e => {
                     const f = e.target.files?.[0];
                     if (!f) return;
                     const reader = new FileReader();
-                    reader.onload = () => {
+                    reader.onload = async () => {
                       try {
-                        const core = JSON.parse(String(reader.result || "")) as ModuleCore;
+                        // read as ArrayBuffer first — .gz packs are binary (readAsText would corrupt bytes)
+                        const raw = reader.result as ArrayBuffer;
+                        const head = new Uint8Array(raw.slice(0, 2));
+                        let text: string;
+                        if ((f.name.endsWith(".gz") || (head[0] === 0x1f && head[1] === 0x8b)) && typeof DecompressionStream !== "undefined") {
+                          text = await gunzipBytes(new Uint8Array(raw));
+                        } else {
+                          text = new TextDecoder("utf-8").decode(raw);
+                        }
+                        const core = JSON.parse(text) as ModuleCore;
                         if (!Array.isArray(core.npcs) || !Array.isArray(core.acts)) throw new Error("格式不符");
                         setModuleCore(core);
                         // Fork: carried stage assets become staged Files (rewritten to IDB on world create)
@@ -850,7 +921,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                         setError(`核心包导入失败：${err instanceof Error ? err.message : String(err)}`);
                       }
                     };
-                    reader.readAsText(f, "utf-8");
+                    reader.readAsArrayBuffer(f);
                   }} />
                 </label>
               </div>
