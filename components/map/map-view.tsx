@@ -439,6 +439,20 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
   const nodeMap = useMemo(() => new Map(allNodes.map(n => [n.id, n])), [allNodes]);
   const currentNode = nodeMap.get(save.currentNodeId);
+
+  // Fork 拆场: scene wall — a companion only witnesses stream messages from their own scene
+  // (locked entries always hidden; scene:X tags only pass for members standing at X)
+  const sceneWallFilter = useCallback((characterId: string) => {
+    const agent = save.agents.find(a => a.characterId === characterId);
+    const locName = nodeMap.get(agent?.currentNodeId || save.currentNodeId)?.name || "";
+    return streamRef.current.filter(m => {
+      if (!m.audience) return true;
+      if (m.audience.includes("locked")) return false;
+      const sc = m.audience.find(a => a.startsWith("scene:"));
+      if (!sc) return true;
+      return sc === `scene:${locName}`;
+    });
+  }, [save.agents, save.currentNodeId, nodeMap]);
   const selectedNode = selectedNodeId ? nodeMap.get(selectedNodeId) : null;
 
   const discoveredRegions = useMemo(() => {
@@ -1623,7 +1637,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             companionIds.map(cid => companionDeclare(
               cid,
               apiConfig,
-              streamRef.current,
+              sceneWallFilter(cid),
               save.agents.length > 1 ? userIdentity : undefined,
               save.agents.find(a => a.characterId === cid)?.affinity,
               { instruction: exitReactionInstruction, secretHint: save.agentSecrets?.[cid] ? `【你的秘密】${save.agentSecrets[cid].content}——是否透露、何时摊牌由你决定。` : undefined, personaHint: save.agents.find(a => a.characterId === cid)?.persona ? `【你的模组内人设】${save.agents.find(a => a.characterId === cid)!.persona!.occupation}——${save.agents.find(a => a.characterId === cid)!.persona!.background}（言行物品须属该时代）` : undefined },
@@ -1949,7 +1963,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
       const fmAgent = save.agents.find(a => a.characterId === characterId);
       const fmPersona = fmAgent?.persona ? `【你的模组内人设】${fmAgent.persona.occupation}——${fmAgent.persona.background}（时代：${fmAgent.persona.era}；言行物品须属这个时代）` : undefined;
-      const decl = await companionDeclare(characterId, apiConfig, streamRef.current, save.agents.length > 1 ? userIdentity : undefined, fmAgent?.affinity, {
+      const decl = await companionDeclare(characterId, apiConfig, sceneWallFilter(characterId), save.agents.length > 1 ? userIdentity : undefined, fmAgent?.affinity, {
         ...(save.agentSecrets?.[characterId] ? { secretHint: `【你的秘密】${save.agentSecrets[characterId].content}——是否透露、何时摊牌由你决定。` } : {}),
         ...(fmPersona ? { personaHint: fmPersona } : {}),
       });
