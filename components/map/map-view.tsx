@@ -69,6 +69,10 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   // Fork: skill-picker sheet (full skill list from the player's sheet — no more typos)
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  // Fork: HO assignment modal — player picks own line first, KP assigns the rest by persona fit
+  const [hoAssignOpen, setHoAssignOpen] = useState(false);
+  const [hoAssignMap, setHoAssignMap] = useState<Record<string, string>>({});   // characterId|"__player__" → ho
+  const [hoAssignLoading, setHoAssignLoading] = useState(false);
   // Fork 十二期: player persona review modal (first world entry)
   const [personaReview, setPersonaReview] = useState<GameSave["myPersona"]>(save.myPersona && !save.myPersona.confirmed ? save.myPersona : null);
   // Fork 十期: stage cues — CG overlay + BGM player
@@ -282,10 +286,15 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   // Fork: lazy investigator import — runs on first world entry (was: blocking lobby creation).
   // One LLM call per person (player first, then companions, sequential); failures fall back silently
   // to the raw character card. Player persona opens the review modal when it arrives.
+  // Phase 0: if HO lines exist but unassigned → assignment modal FIRST (player picks, KP assigns the rest).
   const personaImportedRef = useRef(false);
   React.useEffect(() => {
     if (personaImportedRef.current) return;
     if (!save.personaPending) return;
+    if (save.investigatorLines?.length && !save.boundLineHo) {
+      setHoAssignOpen(true);   // assignment modal opens; import starts after it confirms
+      return;
+    }
     personaImportedRef.current = true;
     let cancelled = false;
     (async () => {
@@ -296,23 +305,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       const introSource = `${skeleton.world.name}：${skeleton.world.lore.slice(0, 260)}`;
       // Fork: table-feel — the KP opens the module and hands out identity cards one by one
       pushMessages({ id: mkId(), type: "narration", text: `🎲 KP 翻开《${skeleton.world.name}》的模组，把几张空白身份卡摆在桌上——"稍等，各位的调查员身份还在拟写。"` });
-      // Fork: HO 密档自动绑定——玩家=__player__，同伴按顺序；每人的导入剧情只发给自己（锁档受众）
-      if (save.investigatorLines?.length) {
-        const bound: Record<string, string> = {};
-        save.investigatorLines.forEach((l, i) => {
-          const cid = i === 0 ? "__player__" : saveRef.current.agents[i - 1]?.characterId;
-          if (cid) bound[cid] = l.ho;
-        });
-        persistSave({ ...saveRef.current, boundLineHo: bound });
-        const myHo = bound["__player__"];
-        const myLine = save.investigatorLines.find(l => l.ho === myHo);
-        if (myLine) {
-          pushMessages({
-            id: mkId(), type: "narration", audience: ["locked"],
-            text: `🔒〔你的私人密档 · ${myHo}〕${myLine.introStory ? `入团前：${myLine.introStory}` : ""}${myLine.relations.length ? `\n你的私人关系：${myLine.relations.map(r => `${r.npc}（${r.relation}）`).join("；")}` : ""}${myLine.events.length ? `\n你还有专属剧情线（${myLine.events.length} 段，触发时机由 KP 安排）——其他调查员对此一无所知。` : ""}`,
-          });
-        }
-      }
+      // Fork: HO 密档改为分配面板——玩家先选，剩余由 KP 按人设贴合度分配（见 hoAssignOpen effect）
+      // （旧的自动按序绑定已移除）
       // Player persona first → the review modal IS your card being handed over
       try {
         const persona = await importInvestigator(myName, `（用户本人）${introSource}`, skeleton, save.mySecret, apiConfig);
@@ -363,6 +357,57 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     if (save.myPersona && !save.myPersona.confirmed) setPersonaReview(save.myPersona);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [save.myPersona]);
+
+  // Fork: HO assignment — player picks, then KP assigns remaining lines by character-card fit
+  const hoPickPlayer = (ho: string) => {
+    setHoAssignMap({ "__player__": ho });
+  };
+  const hoKpAssign = async () => {
+    if (!save.investigatorLines?.length) return;
+    setHoAssignLoading(true);
+    try {
+      const apiConfigs = loadApiConfigs();
+      const apiConfig = apiConfigs.find(c => c.apiKey) || apiConfigs[0];
+      if (!apiConfig?.apiKey) throw new Error("无API配置");
+      const takenHo = Object.values(hoAssignMap)[0] || "";
+      const freeLines = save.investigatorLines.filter(l => l.ho !== takenHo);
+      const companions = save.agents.map(a => {
+        const ch = characters.find(c => c.id === a.characterId);
+        return { cid: a.characterId, name: ch?.name || a.characterId, personality: (ch?.personality || "").slice(0, 300) };
+      });
+      const next: Record<string, string> = { ...hoAssignMap };
+      if (freeLines.length && companions.length) {
+        const sys = `你是COC跑团的KP。若干条调查员密档线（HO）待分配给同伴角色——按人设贴合度分配：角色卡性格/性别/气质与HO导入剧情的契合度优先（比如HO线是恋爱剧情而角色卡是恋爱脑，很贴；HO线是硬汉复仇而角色卡柔弱傲娇，不贴）。每条HO只给一个角色，一个角色至多一条；HO数量≥角色数量时，多余的HO留在池中无人扮演（写"无人"）。只输出：每行"角色名=HO代号"或"角色名=无人"。`;
+        const user = `待分配HO线：\n${freeLines.map(l => `${l.ho}：${l.introStory.slice(0, 200)}${l.relations.length ? `（关系：${l.relations.map(r => `${r.npc}=${r.relation}`).join("；")}）` : ""}`).join("\n")}\n\n同伴角色：\n${companions.map(c => `${c.name}：${c.personality || "（无性格描述）"}`).join("\n")}\n\n玩家已选：${takenHo || "（未选）"}`;
+        const result = await (await import("@/lib/api-helpers")).simpleLLMCall(apiConfig, [
+          { role: "system", content: sys },
+          { role: "user", content: user },
+        ], { temperature: 0.3 });
+        const txt = (result.content as string) || "";
+        for (const c of companions) {
+          const idx = txt.indexOf(c.name);
+          const ho = idx >= 0 ? txt.slice(idx + c.name.length).replace(/^[\s]*[=＝][\s]*/, "").split(/[\s\n]+/)[0] || "" : "";
+          if (ho && ho !== "无人" && freeLines.some(l => l.ho === ho) && !Object.values(next).includes(ho)) next[c.cid] = ho;
+        }
+      }
+      setHoAssignMap(next);
+    } catch { /* keep player's pick only */ }
+    setHoAssignLoading(false);
+  };
+  const hoAssignConfirm = () => {
+    persistSave({ ...save, boundLineHo: hoAssignMap });
+    setHoAssignOpen(false);
+    pushMessages({ id: mkId(), type: "system", text: "🎭 HO 密档线已分配——KP 开始分发身份卡" });
+    // Player's own line → locked message right away (companions get theirs via lineHint during play)
+    const myHo = hoAssignMap["__player__"];
+    const myLine = save.investigatorLines?.find(l => l.ho === myHo);
+    if (myLine) {
+      pushMessages({
+        id: mkId(), type: "narration", audience: ["locked"],
+        text: `🔒〔你的私人密档 · ${myHo}〕${myLine.introStory ? `入团前：${myLine.introStory}` : ""}${myLine.relations.length ? `\n你的私人关系：${myLine.relations.map(r => `${r.npc}（${r.relation}）`).join("；")}` : ""}${myLine.events.length ? `\n你还有专属剧情线（${myLine.events.length} 段，触发时机由 KP 安排）——其他调查员对此一无所知。` : ""}`,
+      });
+    }
+  };
 
   const agentsAtNode = useCallback((nodeId: string) =>
     save.agents.filter(a => a.characterId && a.currentNodeId === nodeId),
@@ -2720,6 +2765,83 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       )}
 
       {/* ═══ Overlays ═══ */}
+
+      {/* Fork: HO assignment modal — player picks first, KP assigns the rest */}
+      {hoAssignOpen && save.investigatorLines && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 57,
+          background: "rgba(5,5,10,0.75)", backdropFilter: "blur(6px)",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div style={{
+            width: "min(420px, 100%)", maxHeight: "80vh", overflowY: "auto",
+            background: "var(--c-adv-panel-bg)", borderRadius: 16,
+            border: "1px solid rgba(190,170,240,0.3)",
+            boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
+            padding: "18px 16px",
+          }}>
+            <div style={{ fontSize: "calc(15px*var(--app-text-scale,1))", fontWeight: 700, color: "rgba(190,170,240,0.95)", marginBottom: 3 }}>🎭 选择你的密档线</div>
+            <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+              本模组为每位调查员准备了私人剧情线——先选你要扮演哪条，剩下的由 KP 按各角色的人设贴合度分配给同伴。
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {save.investigatorLines.map(l => {
+                const picked = hoAssignMap["__player__"] === l.ho;
+                return (
+                  <button key={l.ho} type="button" onClick={() => hoPickPlayer(l.ho)} style={{
+                    padding: "9px 11px", borderRadius: 10, textAlign: "left", fontFamily: "inherit",
+                    border: `1px solid ${picked ? "rgba(190,170,240,0.55)" : "var(--c-adv-input-border)"}`,
+                    background: picked ? "rgba(190,170,240,0.12)" : "var(--c-adv-input-bg)",
+                    cursor: "pointer",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
+                      <span style={{ fontSize: "calc(12px*var(--app-text-scale,1))", fontWeight: 700, color: picked ? "rgba(190,170,240,0.95)" : "var(--c-adv-text)" }}>{l.ho}</span>
+                      {picked && <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(190,170,240,0.8)", fontFamily: "monospace", letterSpacing: "0.15em" }}>✓ 你</span>}
+                    </div>
+                    <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-dim)", lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                      {l.introStory || "（无导入剧情摘要）"}
+                      {l.relations.length ? ` 〔${l.relations.map(r => r.npc).join("、")}〕` : ""}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            {Object.keys(hoAssignMap).length > 1 && (
+              <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 8, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)" }}>
+                <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 4, letterSpacing: "0.1em" }}>KP 分配结果</div>
+                {save.agents.map(a => {
+                  const ch = characters.find(c => c.id === a.characterId);
+                  const ho = hoAssignMap[a.characterId];
+                  return (
+                    <div key={a.characterId} style={{ display: "flex", justifyContent: "space-between", fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-dim)", padding: "2px 0" }}>
+                      <span>{ch?.name || a.characterId}</span>
+                      <span style={{ color: ho ? "rgba(190,170,240,0.9)" : "var(--c-adv-text-muted)" }}>{ho || "—（未分）"}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button type="button" onClick={hoKpAssign} disabled={!hoAssignMap["__player__"] || hoAssignLoading || save.agents.length === 0} style={{
+                flex: 1, padding: "9px 0", borderRadius: 9,
+                border: "1px solid var(--c-adv-input-border)", background: "var(--c-adv-input-bg)",
+                color: hoAssignLoading ? "var(--c-adv-text-muted)" : "var(--c-adv-text-dim)",
+                fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+              }}>
+                {hoAssignLoading ? "⏳ KP 分配中..." : "🎲 KP 分配剩余"}
+              </button>
+              <button type="button" onClick={hoAssignConfirm} disabled={!hoAssignMap["__player__"]} style={{
+                flex: 1, padding: "9px 0", borderRadius: 9,
+                border: "none", background: "rgba(190,170,240,0.25)",
+                color: "rgba(220,210,250,0.95)", fontWeight: 600,
+                fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
+              }}>
+                确认并开始
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Fork: Skill Picker — full skill list from the sheet, tap to select (no typos) */}
       {skillPickerOpen && (() => {
