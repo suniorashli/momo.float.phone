@@ -1266,6 +1266,15 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             const dmCtxForAT: import("@/lib/map-rpg-engine").DMContext = { ...dmCtxForEnding, recentJournal: saveRef.current.journal.map(j => j.text) };
             const at = await generateAfterTalk(dmCtxForAT, apiConfig, saveRef.current.agents.map(a => charName(a.characterId)));
             setAfterTalk(at.lines);
+            // Fork: 后日谈同步落进皮下吐槽面板（OOC 持久化，合上结局卡后仍可回看）
+            if (at.lines.length) {
+              pushMessages({ id: mkId(), type: "system", text: "🎬 后日谈已收录——见顶部「🎤 皮下吐槽」面板" });
+              for (const l of at.lines) {
+                const m: StreamMessage = { id: mkId(), type: "ooc", speaker: l.speaker, text: l.text };
+                pushMessages(m);
+                streamRef.current = [...streamRef.current, m];
+              }
+            }
           } catch { /* after-talk is best-effort */ }
           setAfterTalkLoading(false);
           // Final summary on game completion — use auxiliary API
@@ -4415,20 +4424,34 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               </div>
             )}
 
-            {/* Return button (after fireworks, inside card) */}
+            {/* Return buttons (after fireworks, inside card) — leave is always manual, never forced */}
             {!showFireworks && endingStep > endingData.paragraphs.length && (
-              <button onClick={(e) => {
-                e.stopPropagation();
-                handleArchive();
-              }} style={{
-                marginTop: 12, padding: "12px 32px", borderRadius: 100, width: "100%",
-                background: "linear-gradient(135deg, rgba(220,180,120,0.25), rgba(180,130,70,0.15))",
-                border: "1px solid rgba(220,180,120,0.4)",
-                color: "#f4dca8", fontSize: "calc(14px*var(--app-text-scale,1))", fontWeight: 600,
-                letterSpacing: "0.2em", cursor: "pointer", fontFamily: "inherit",
-              }}>
-                完结
-              </button>
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button onClick={(e) => {
+                  e.stopPropagation();
+                  setEndingData(null);   // just fold the card — stay in the world (reveal button / OOC panel still there)
+                }} style={{
+                  flex: 1, padding: "12px 0", borderRadius: 100,
+                  background: "transparent",
+                  border: "1px solid rgba(255,255,255,0.18)",
+                  color: "rgba(255,255,255,0.45)", fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 600,
+                  letterSpacing: "0.15em", cursor: "pointer", fontFamily: "inherit",
+                }}>
+                  留在此界
+                </button>
+                <button onClick={(e) => {
+                  e.stopPropagation();
+                  handleArchive();
+                }} style={{
+                  flex: 1.4, padding: "12px 0", borderRadius: 100,
+                  background: "linear-gradient(135deg, rgba(220,180,120,0.25), rgba(180,130,70,0.15))",
+                  border: "1px solid rgba(220,180,120,0.4)",
+                  color: "#f4dca8", fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 600,
+                  letterSpacing: "0.15em", cursor: "pointer", fontFamily: "inherit",
+                }}>
+                  完结 · 归档离开
+                </button>
+              </div>
             )}
           </div>
 
