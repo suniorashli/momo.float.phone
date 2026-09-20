@@ -876,6 +876,10 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 - 不要让玩家在同一个地方原地转圈——如果当前地点的调查已经完成，暗示他们该去哪里
 【选项纪律·防剧透·核心】choices 数组通常留空 []；至多 1-2 个，且只能是"移动/离开/原地等待/撤退"这类元动作。禁止把调查/询问/搜查/检定做成选项——那是调查员自己宣言的事。禁止在选项文本中出现叙述里没写过的人名、物品名、地点名（玩家还没见到的东西出现在选项里=剧透）。你的引导职责全部由 hints 承担
 
+【密档划账·防遗忘】
+- 每轮输出 revealed 数组：把本轮你在叙述/NPC台词/私聊幕中**实际公开**的密档条目逐字摘录进去（来源：[密档]的真相/NPC秘密/伏笔/反转、[调查员秘密]、[调查员密档线]的事件）
+- 下一轮你看到的密档总表里，已公开条目会标〔已公开〕——这些条目视为调查员已知信息：可以正常引用、展开后续，但**禁止再次当新信息卖出、禁止给出与公开内容矛盾的说法**
+- 未标〔已公开〕的条目仍是暗牌——继续守口，不得在叙述里提前泄底
 【线索与收尾】
 - clues数组：本轮调查真正获得的关键线索，每条一句短句（系统会归档到线索板，按地点分类，全队可见）；没有新线索就留空[]
 - investigation_done：当本地点能发现的东西已经全部给出、继续停留只会原地空转时设为true（系统会提示调查员转移地点，防止无意义重复调查）
@@ -931,7 +935,7 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
-{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动，像是在提醒来客这里并不太平。\\n\\n柜台后的老板抬起头，看了队伍一眼。柜台上摆着一盏油灯和一本翻开的住宿登记簿。","npc_lines":[{"speaker":"老板","text":"「这么晚才来？就剩两间房了。」他打量着来客，手指无意识地敲着登记簿。"}],"situation":"角色们看到的（传给角色AI）","cg":"","bgm":"","choices":[],"hints":[{"label":"翻看住宿登记簿","skillHint":"图书馆使用"},{"label":"观察老板的神色","skillHint":"心理学"},{"label":"留意屋外的动静","skillHint":"聆听"}],"topics":[{"label":"问起最近的怪事","skillHint":"话术"}],"clues":["登记簿上有一个被划掉的名字"],"investigation_done":false,"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品或SAN-5"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
+{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动，像是在提醒来客这里并不太平。\\n\\n柜台后的老板抬起头，看了队伍一眼。柜台上摆着一盏油灯和一本翻开的住宿登记簿。","npc_lines":[{"speaker":"老板","text":"「这么晚才来？就剩两间房了。」他打量着来客，手指无意识地敲着登记簿。"}],"situation":"角色们看到的（传给角色AI）","cg":"","bgm":"","choices":[],"hints":[{"label":"翻看住宿登记簿","skillHint":"图书馆使用"},{"label":"观察老板的神色","skillHint":"心理学"},{"label":"留意屋外的动静","skillHint":"聆听"}],"topics":[{"label":"问起最近的怪事","skillHint":"话术"}],"clues":["登记簿上有一个被划掉的名字"],"revealed":["本轮你在叙述/NPC台词/私聊幕中公开的密档条目原文（从[密档]/[调查员密档线]里逐字摘录；没有公开任何密档就留空[]）"],"investigation_done":false,"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品或SAN-5"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
 
 export type DMSceneResult = {
   narration: string;
@@ -1003,6 +1007,8 @@ export type DMContext = {
   investigatorLinesHint?: string;
   // Fork 八期B: locked private-talk log (for ending branch adjudication; formatted strings)
   lockedLogSummary?: string[];
+  // Fork: 密档划账——已公开条目原文（注入密档时标〔已公开〕；KP 禁止重复卖出或矛盾表述）
+  revealedDossier?: string[];
   // Fork 九期B: staged acts — current act + unlocked acts (later acts' truth NEVER enters the prompt)
   acts?: ModuleAct[];
   currentAct?: number;
@@ -1088,18 +1094,22 @@ ${ctx.partySecrets.map(s => `${s.who}：${s.secret.content}（咬合点：${s.se
   const lockedBlock = ctx.lockedLogSummary && ctx.lockedLogSummary.length > 0 ? `\n[锁档私聊]（发生过但其他调查员不知情的私下交谈）
 ${ctx.lockedLogSummary.join("\n")}` : "";
   // Fork: HO 密档块（导入剧情+个人线事件表；KP 按触发条件演出，隔离受众）
-  const hoLinesBlock = ctx.investigatorLinesHint ? `\n[调查员密档线]（各HO的导入剧情与个人线——除本人外其他调查员不知道；事件按触发条件发生，发生时在side_scenes走私聊幕（who=该HO），不当众展开）
+  const hoLinesBlock = ctx.investigatorLinesHint ? `\n[调查员密档线]（各HO的导入剧情与个人线——除本人外其他调查员不知道；事件按触发条件发生，发生时在side_scenes走私聊幕（who=该HO），不当众展开；标〔已公开〕的事件是已经发生过的——不可重演、后续必须与之保持一致）
 ${ctx.investigatorLinesHint}` : "";
   // Fork 十期: asset cue manifest (one page of names)
   const assetBlock = ctx.assetManifest ? `\n[演出资源清单]（只有名字；剧情对应时输出字段触发前端展示，绝不描述图片内容）
 ${ctx.assetManifest}` : "";
-  const dmBlock = dm ? `${secretsBlock}${lockedBlock}${assetBlock}${hoLinesBlock}\n[密档]
-真相：${dm.hiddenTruth}
-${ctx.npcSecret ? `当前NPC秘密：${ctx.npcSecret}` : ""}
-NPC秘密：${Object.entries(dm.npcSecrets).map(([k, v]) => `${k}→${v}`).join("；")}
-伏笔：${dm.foreshadowing.filter(f => !dir?.plantedClues.includes(f)).join("、") || "无"}
-反转：${dm.plotTwist}
-结局：${dm.endgame}` : "";
+  // Fork: 密档划账——按 revealedDossier 给每条密档标〔已公开〕（KP 不得重复卖出/矛盾）
+  const rv = ctx.revealedDossier || [];
+  const markRv = (s: string) => rv.some(r => r && (s.includes(r.slice(0, 12)) || r.includes(s.slice(0, 12)))) ? "〔已公开〕" : "";
+  const dmBlock = dm ? `${secretsBlock}${lockedBlock}${assetBlock}${hoLinesBlock}\n[密档]（标〔已公开〕的条目调查员已知——可引用可展开，禁止再当新信息卖出、禁止与已公开内容矛盾；未标注的仍是暗牌）
+真相${markRv(dm.hiddenTruth)}：${dm.hiddenTruth}
+${ctx.npcSecret ? `当前NPC秘密${markRv(ctx.npcSecret)}：${ctx.npcSecret}` : ""}
+NPC秘密：${Object.entries(dm.npcSecrets).map(([k, v]) => `${k}→${v}${markRv(v)}`).join("；")}
+伏笔：${dm.foreshadowing.filter(f => !dir?.plantedClues.includes(f)).map(f => `${f}${markRv(f)}`).join("、") || "无"}
+反转${markRv(dm.plotTwist)}：${dm.plotTwist}
+结局${markRv(dm.endgame)}：${dm.endgame}
+${rv.length ? `已公开清单（已划账）：\n${rv.map(r => `- ${r}`).join("\n")}` : ""}` : "";
 
   // Story progress + narrative phase
   const totalStages = (ctx.mainQuestStages || []).length || 5;
@@ -1281,6 +1291,7 @@ export async function dmScene(ctx: DMContext, apiConfig: ApiConfig): Promise<DMS
     })).filter((t: { label: string }) => t.label),
     clues: (p.clues || []).map((c: unknown) => String(c || "")).filter(Boolean),
     investigationDone: p.investigation_done || p.investigationDone || false,
+    revealed: (p.revealed || []).filter((r: unknown) => typeof r === "string" && r.trim()),
     sideScenes: (p.side_scenes || p.sideScenes || []).map((s: Record<string, unknown>) => ({
       who: String(s.who || ""),
       npc: String(s.npc || ""),
@@ -1694,7 +1705,7 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是COC跑团的守秘人（KP）。
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
-{"narration":"火光在墙上跳了两下，照得每个人的神情都忽明忽暗。\\n\\n队伍各自的行动在同一刻撞在一起，让原本僵持的局势突然松动。\\n\\n门外传来的脚步声，说明新的变化已经逼近。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"新局势描述","choices":[{"label":"小心地调查声音来源","stat_check":{"stat":"聆听"}},{"label":"{{user}}镇定地与警察周旋","stat_check":{"stat":"话术","who":"{{user}}"}},{"label":"直接离开"}],"journal":"日志","gained":["获得物品"],"lost":["失去物品或SAN-3"],"clues":["新获得的关键线索"],"topics":[],"investigation_done":false,"side_scenes":[],"advance":false,"ending":false,"move_to":"节点名 或 {\"{{user}}\":\"节点名\",\"角色名\":\"节点名\"}","world_events":["世界各处事件"]}`;
+{"narration":"火光在墙上跳了两下，照得每个人的神情都忽明忽暗。\\n\\n队伍各自的行动在同一刻撞在一起，让原本僵持的局势突然松动。\\n\\n门外传来的脚步声，说明新的变化已经逼近。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"新局势描述","choices":[{"label":"小心地调查声音来源","stat_check":{"stat":"聆听"}},{"label":"{{user}}镇定地与警察周旋","stat_check":{"stat":"话术","who":"{{user}}"}},{"label":"直接离开"}],"journal":"日志","gained":["获得物品"],"lost":["失去物品或SAN-3"],"clues":["新获得的关键线索"],"revealed":["本轮公开的密档条目原文（逐字摘录；无则留空[]）"],"topics":[],"investigation_done":false,"side_scenes":[],"advance":false,"ending":false,"move_to":"节点名 或 {\"{{user}}\":\"节点名\",\"角色名\":\"节点名\"}","world_events":["世界各处事件"]}`;
 
 async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneResult> {
   const userMsg = buildDMUserMsg(ctx);
@@ -1763,6 +1774,7 @@ async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneR
     })).filter((t: { label: string }) => t.label),
     clues: (p.clues || []).map((c: unknown) => String(c || "")).filter(Boolean),
     investigationDone: p.investigation_done || p.investigationDone || false,
+    revealed: (p.revealed || []).filter((r: unknown) => typeof r === "string" && r.trim()),
     sideScenes: (p.side_scenes || p.sideScenes || []).map((s: Record<string, unknown>) => ({
       who: String(s.who || ""),
       npc: String(s.npc || ""),

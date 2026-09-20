@@ -327,6 +327,7 @@ export type GameSave = {
   agentSecrets?: Record<string, PersonalSecret>; // characterId → 同伴的秘密（KP 可见；用户结局前不可见，幕后页揭晓）
   investigatorLines?: InvestigatorLine[];        // fork: HO 导入剧情/个人线密档（随核心包/世界导入；KP 与本人可见）
   boundLineHo?: Record<string, string>;          // fork: characterId → HO 代号（"__player__"=玩家本人）；绑定后个人线才注入
+  revealedDossier?: string[];                    // fork: 密档划账——已公开条目原文（NPC秘密/伏笔/HO事件/真相切片）；注入时标注状态防止KP遗忘或前后矛盾
   lockedLog?: { id: string; who: string; npc?: string; text: string; day: string }[]; // 锁档私聊流（结局揭晓；八期B 填充）
   // ── fork 九期B: staged acts ──
   currentAct?: number;             // 当前幕索引（skeleton.acts[currentAct]）

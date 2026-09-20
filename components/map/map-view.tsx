@@ -688,6 +688,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         } : {}),
         acts: skeleton.acts,
         currentAct: save.currentAct ?? 0,
+        // Fork: 密档划账——已公开条目注入（KP 按标注守账）
+        revealedDossier: save.revealedDossier || [],
         assetManifest: buildAssetManifest(assets),
         playerPersona: save.myPersona ? `${save.myPersona.occupation}——${save.myPersona.background}${save.myPersona.hooks ? `（私下在意：${save.myPersona.hooks}）` : ""}` : undefined,
         discoveredRegionIds: [...discoveredRegions].map(idx => skeleton.mapInput.regions[idx]?.id).filter(Boolean) as string[],
@@ -712,8 +714,13 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
       const scene = await expandEvent(dmCtx, companionIds, apiConfig);
       failedSkillsRef.current.clear(); // new scene — reset the failed-check guard
-      const dmScene = scene as EventScene & { dmSituation?: string; worldEvents?: string[] };
+      const dmScene = scene as EventScene & { dmSituation?: string; worldEvents?: string[]; revealed?: string[] };
       if (dmScene.worldEvents?.length) setWorldEvents(dmScene.worldEvents);
+      // Fork: 密档划账——本轮公开的密档条目记入总账（去重）
+      if (dmScene.revealed?.length) {
+        const merged = [...new Set([...(save.revealedDossier || []), ...dmScene.revealed.map(r => r.trim())].filter(Boolean))];
+        persistSave({ ...save, revealedDossier: merged });
+      }
 
       const sceneJournal = scene.journalEntry?.trim();
       const sceneClues = (scene.clues || []).filter(Boolean);
@@ -956,12 +963,19 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       dmCtx.previousDialogue = prevDialogue;
       dmCtx.director = save.director;
       dmCtx.recentJournal = saveRef.current.journal.map(j => j.text);
+      dmCtx.revealedDossier = save.revealedDossier || [];   // fork: 密档划账随裁决上下文注入
 
       const continuation = await resolveRound(dmCtx, allDeclarations, apiConfig);
 
       // Update Director
-      const ev = continuation as EventScene & { gained?: string[]; lost?: string[]; npcsInvolved?: string[]; moveTo?: string; worldEvents?: string[] };
+      const ev = continuation as EventScene & { gained?: string[]; lost?: string[]; npcsInvolved?: string[]; moveTo?: string; worldEvents?: string[]; revealed?: string[] };
       if (ev.worldEvents?.length) setWorldEvents(ev.worldEvents);
+      // Fork: 密档划账——本轮公开的密档条目记入总账（去重）
+      if (ev.revealed?.length) {
+        const revealedMerged = [...new Set([...(save.revealedDossier || []), ...ev.revealed.map(r => r.trim())].filter(Boolean))];
+        save = { ...save, revealedDossier: revealedMerged };
+        dmCtx.revealedDossier = revealedMerged;
+      }
       const updatedDirector = { ...save.director };
 
       // Fork 九期B: act transition — when the act's final stage completes, load the next act
@@ -1255,6 +1269,18 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           }
           lockedLogRef.current = [...lockedLogRef.current, entry];
           sideSceneEntries = [...sideSceneEntries, entry];
+        }
+      }
+      // Fork: 私聊幕若演的是 HO 个人线事件 → 事件摘要记入划账总账（KP 不重演）
+      if (ev.revealed?.length) { /* already merged above */ }
+      else {
+        const hoOwner = save.investigatorLines?.length ? (Object.entries(save.boundLineHo || {}).find(([, ho]) => {
+          const line = save.investigatorLines?.find(l => l.ho === ho);
+          return line?.events.some(e => e.summary.slice(0, 15) === (sideSceneEntries[0]?.text || "").slice(0, 15));
+        })?.[0]) : undefined;
+        if (hoOwner && sideSceneEntries[0]) {
+          const mergedHo = [...new Set([...(save.revealedDossier || []), sideSceneEntries[0].text])];
+          save = { ...save, revealedDossier: mergedHo };
         }
       }
       // Fork: archive clues from this resolve round + investigation-done hint + time ticks
