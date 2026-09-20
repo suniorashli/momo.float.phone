@@ -853,7 +853,8 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 
 职责与流程（真正的跑团桌面流程）：
 - 你的职责是报模组信息：这里有什么（环境、物品、痕迹）、NPC有谁、NPC说了什么做了什么、氛围如何
-- 你可以给【暗示】（hints数组）：提示这里可能值得做什么检定（如"翻找书桌的文件""观察对方说谎的迹象"），但绝不替调查员决定行动
+- 你可以给【暗示】（hints数组）：提示哪里可能值得留意（如"翻找书桌的文件""观察对方说谎的迹象"），但绝不替调查员决定行动
+- hints 只指向本次叙述里已出现的可交互对象与可疑之处（叙述里摆了登记簿才能暗示翻看；NPC的小动作得先写出来才能暗示观察）——禁止暗示叙述中不存在的人/物/地点，禁止在hint里泄露答案本身
 - 行动权完全在调查员手中：他们宣言做什么、用什么检定，由系统掷骰后你再演结果
 - 若调查员宣言的行动在这个场景不合理（比如对没有机关的墙用锁匠），不要拒绝，而是裁定"似乎没有什么效果"——除非大成功，可以强行取得一点意外成果（发现别的线索之类）
 - 这是克苏鲁神话跑团：恐怖与未知是主旋律，战斗是最后的手段，理智比生命更脆弱。
@@ -871,14 +872,14 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
   · 中期（3阶段左右）：开始揭示部分真相，触发反转（密档的plotTwist），NPC暴露隐藏面目，冲突升级
   · 后期（最后1-2阶段）：收束剧情，重要抉择，走向结局（密档的endgame），营造紧迫感
 - 每个场景至少做一件推进剧情的事：给一条线索/引导玩家去下一个关键地点/让NPC暗示某个伏笔/揭示一个秘密
-- 选项设计要引导剧情前进：至少一个选项与主线相关，让玩家有理由去探索下一个关键地点
+- 剧情前进靠叙述里埋的可疑细节与 hints 的方向暗示驱动，不靠选项
 - 不要让玩家在同一个地方原地转圈——如果当前地点的调查已经完成，暗示他们该去哪里
-【选项纪律·核心】choices 数组通常留空 [] 或至多 1-2 个明显是"移动/离开"类选项；调查行动不要做成选项——那是调查员自己宣言的事。你的引导职责全部由 hints 承担
+【选项纪律·防剧透·核心】choices 数组通常留空 []；至多 1-2 个，且只能是"移动/离开/原地等待/撤退"这类元动作。禁止把调查/询问/搜查/检定做成选项——那是调查员自己宣言的事。禁止在选项文本中出现叙述里没写过的人名、物品名、地点名（玩家还没见到的东西出现在选项里=剧透）。你的引导职责全部由 hints 承担
 
 【线索与收尾】
 - clues数组：本轮调查真正获得的关键线索，每条一句短句（系统会归档到线索板，按地点分类，全队可见）；没有新线索就留空[]
 - investigation_done：当本地点能发现的东西已经全部给出、继续停留只会原地空转时设为true（系统会提示调查员转移地点，防止无意义重复调查）
-- topics数组：与NPC对话的场景（事件类型为交谈）给出3-5个值得问的话题：label=问题方向（如"问起昨夜的动静"），skillHint=建议技能（话术/心理学/说服等）；非对话场景留空[]
+- topics数组：与NPC对话的场景（事件类型为交谈）给出3-5个值得问的话题：label=问题方向（如"问起昨夜的动静"），skillHint=建议技能（话术/心理学/说服等）；非对话场景留空[]。topics 只能指向本场景已出场的NPC与叙述中已提及的事，禁止问还没人提过的人/物/事件
 - advance=true表示当前主线阶段完成，请在关键剧情节点（获得关键线索/揭示重大真相/逃出险境）时设为true
 
 【COC氛围与判定】
@@ -1193,9 +1194,10 @@ SAN：理智值（0-99）。目睹恐怖、阅读禁书、直面神话存在都�
 - 大失败：严重后果——重伤（扣大量HP）、物品损坏、触发危险或惊惧（额外扣SAN）
 【重要】属性检定时，系统会随机选队伍中一个人掷骰，结果代表整个队伍的判定。根据掷骰结果（成功/失败/大成功/大失败）描述该行动对所有人的影响。
 
-选项设计：
-- 属性/技能判定：stat_check，如{"stat":"侦查"}、{"stat":"图书馆使用"}、{"stat":"dex"}；COC技能名（侦查/聆听/图书馆使用/心理学/潜行/话术/急救等）会自动换算到对应属性
-- 物品要求：requires，如{"label":"用钥匙开门","requires":"古老钥匙"}
+选项设计（防剧透纪律）：
+- choices 通常留空 []；至多 1-2 个，只能是"移动/离开/原地等待/撤退"类元动作
+- 禁止把调查/询问/搜查/检定做成选项；禁止在选项文本中出现叙述里没出现过的人名/物品名/地点名
+- 偶尔确需检定型选项时（如岔路口的回避判定）才用 stat_check，如{"stat":"侦查"}；COC技能名会自动换算到对应属性；requires 物品同样只能是叙述里出现过/队伍已持有的东西
 journal字段：用第三人称记录（用 {{user}} 而不是"我"或"你"）。
 日志：${truncateByTokenBudget(ctx.recentJournal, tokenConfig.journalTokenBudget).join("；")}
 ${ctx.previousDialogue ? `\n对话历史：\n${truncateByTokenBudget(ctx.previousDialogue.split("\n"), tokenConfig.dialogueTokenBudget).join("\n")}` : ""}
@@ -1234,13 +1236,27 @@ export async function dmScene(ctx: DMContext, apiConfig: ApiConfig): Promise<DMS
       speaker: d.speaker || "NPC", text: d.text || "",
     })),
     situation: p.situation || "",
-    choices: (p.choices || []).map((c: Record<string, unknown>) => ({
+    choices: (p.choices || [])
+      // Fork: anti-spoiler filter — drop choices naming people/items/places absent from narration & NPC lines
+      .filter((c: Record<string, unknown>) => {
+        const label = String(c.label || "");
+        if (!label) return false;
+        const known = `${p.narration || ""}\n${(p.npc_lines || []).map((d: Record<string, string>) => `${d.speaker || ""}${d.text || ""}`).join("\n")}\n你|{{user}}|移动|离开|原地|等待|撤退|搜查周围|搜索|休息|扎营`;
+        // Chinese names (2-4 chars, no punctuation) & quoted items — verify they were mentioned
+        const suspects = label.match(/[一-龥]{2,4}(?=的|在|去|问|找|看|翻|查)/g) || [];
+        const items = label.match(/[「“]([^」”]+)[」”]/g) || [];
+        for (const s of [...suspects, ...items.map(i => i.slice(1, -1))]) {
+          if (s && !known.includes(s)) return false;
+        }
+        return true;
+      })
+      .map((c: Record<string, unknown>) => ({
       label: (c.label as string) || "",
       ...(c.stat_check || c.statCheck ? {
         statCheck: (c.stat_check || c.statCheck) as { stat: string; who?: string },
       } : {}),
       ...(c.requires ? { requires: c.requires as string } : {}),
-    })),
+      })),
     journal: p.journal || p.journal_entry || "",
     gained: p.gained || p.items_gained || [],
     lost: p.lost || p.items_lost || [],
@@ -1688,13 +1704,27 @@ async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneR
       speaker: d.speaker || "NPC", text: d.text || "",
     })),
     situation: p.situation || "",
-    choices: (p.choices || []).map((c: Record<string, unknown>) => ({
+    choices: (p.choices || [])
+      // Fork: anti-spoiler filter — drop choices naming people/items/places absent from narration & NPC lines
+      .filter((c: Record<string, unknown>) => {
+        const label = String(c.label || "");
+        if (!label) return false;
+        const known = `${p.narration || ""}\n${(p.npc_lines || []).map((d: Record<string, string>) => `${d.speaker || ""}${d.text || ""}`).join("\n")}\n你|{{user}}|移动|离开|原地|等待|撤退|搜查周围|搜索|休息|扎营`;
+        // Chinese names (2-4 chars, no punctuation) & quoted items — verify they were mentioned
+        const suspects = label.match(/[一-龥]{2,4}(?=的|在|去|问|找|看|翻|查)/g) || [];
+        const items = label.match(/[「“]([^」”]+)[」”]/g) || [];
+        for (const s of [...suspects, ...items.map(i => i.slice(1, -1))]) {
+          if (s && !known.includes(s)) return false;
+        }
+        return true;
+      })
+      .map((c: Record<string, unknown>) => ({
       label: (c.label as string) || "",
       ...(c.stat_check || c.statCheck ? {
         statCheck: (c.stat_check || c.statCheck) as { stat: string; who?: string },
       } : {}),
       ...(c.requires ? { requires: c.requires as string } : {}),
-    })),
+      })),
     journal: p.journal || p.journal_entry || "",
     gained: p.gained || p.items_gained || [],
     lost: p.lost || p.items_lost || [],
