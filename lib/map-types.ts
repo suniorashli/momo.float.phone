@@ -179,6 +179,7 @@ export type InvestigatorPersona = {
   keepTraits: string;     // 性格保持（角色卡核心性格不变的部分）
   changes: string;        // 时代适配调整（警察→捕快之类的说明）
   hooks: string;          // 与模组/秘密的连接点
+  cardReaction?: string;  // fork: 拿到身份卡那一刻的第一人称反应（KP发卡演出的台词）
   confirmed?: boolean;    // fork 十二期: 玩家人设已审校确认（首次进入世界时过目）
 };
 

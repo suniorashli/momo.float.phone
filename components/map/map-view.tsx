@@ -318,6 +318,14 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               agents: saveRef.current.agents.map(x => x.characterId === a.characterId ? { ...x, persona } : x),
             });
             pushMessages({ id: mkId(), type: "system", text: `📇 KP 把身份卡递给 ${name}——${persona.era} · ${persona.occupation}` });
+            // Fork: the companion reacts in their own voice — "I'm going to play... a WHAT?!"
+            pushMessages({
+              id: mkId(),
+              type: "character",
+              speaker: persona.name || name,
+              text: persona.cardReaction?.trim() || `（展开身份卡，眼睛慢慢睁大）……要我演这个时代的${persona.occupation}？行吧，我接了。`,
+              emotion: "worried",
+            });
           } else if (!cancelled) {
             pushMessages({ id: mkId(), type: "system", text: `📇 ${name} 的身份卡在途中遗失——TA将以原本的面目加入调查` });
           }
