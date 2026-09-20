@@ -417,11 +417,19 @@ export type EventScene = {
 
 export type StreamMessage = {
   id: string;
-  type: "narration" | "npc" | "player" | "character" | "system" | "location" | "roll" | "divider";
+  type: "narration" | "npc" | "player" | "character" | "system" | "location" | "roll" | "divider" | "declCard";
   speaker?: string;
   text: string;
   emotion?: string;
   audience?: string[];  // fork 八期A 骨架（B期启用）：可见名单；undefined = 全员可见，["locked"] = 锁档
+  // fork: declCard — one compact card per declaration (say / do / dice)
+  decl?: {
+    who: string;
+    say?: string;
+    do?: string;
+    dice?: { skill: string; value: number; roll: number; level: string; detail?: string };
+    emotion?: string;
+  };
 };
 
 // Collect-Resolve-Narrate: a player or companion's declared action+speech per round

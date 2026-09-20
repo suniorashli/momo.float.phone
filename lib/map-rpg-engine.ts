@@ -1529,11 +1529,24 @@ async function buildCompanionDeclarePromptPayload(
 
   // Fork 八期B: audience isolation — companions never see locked private talks (user's or others')
   const filteredLog = (streamLog || []).filter(m => m.type !== "system" && m.type !== "divider" && !(m.audience && m.audience.includes("locked")));
+  // Fork: declCard → readable line for LLM context (the card itself has empty text)
+  const describeMsgForLLM = (m: import("./map-types").StreamMessage): string => {
+    if (m.type === "declCard" && m.decl) {
+      const d = m.decl;
+      const parts = [
+        d.say ? `说：「${d.say}」` : "",
+        d.do ? `做：${d.do}` : "",
+        d.dice ? `（宣言检定 ${d.dice.skill}${d.dice.value}：D100=${d.dice.roll}，结果由你演出）` : "",
+      ].filter(Boolean).join(" ");
+      return `${d.who}: ${parts}`;
+    }
+    return m.speaker ? `${m.speaker}: ${m.text}` : m.text;
+  };
   const pastHistory: import("./chat-storage").ChatMessage[] = filteredLog.map((m, i) => ({
     id: m.id || `sl_${i}`,
     sessionId: "",
     role: (m.type === "player" ? "user" : "assistant") as "user" | "assistant",
-    content: m.speaker ? `${m.speaker}: ${m.text}` : m.text,
+    content: describeMsgForLLM(m),
     status: "sent" as const,
     createdAt: new Date(Date.now() - (filteredLog.length - i) * 1000).toISOString(),
   }));

@@ -716,28 +716,24 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   const handlePlayerAction = useCallback(async (actionText: string, skipDisplay?: boolean) => {
     // ── Phase 2: Player declares ──
     const playerName = userIdentity?.name || "你";
-    if (!skipDisplay) {
-      // Parse "说：「xxx」\n做：xxx" format for display — sync streamRef so companions see it
-      const sayMatch = actionText.match(/说：「(.+?)」/);
-      const doMatch = actionText.match(/做：(.+)/);
-      if (sayMatch) {
-        const msg: StreamMessage = { id: mkId(), type: "player", speaker: playerName, text: sayMatch[1] };
-        pushMessages(msg);
-        streamRef.current = [...streamRef.current, msg];
-      }
-      if (doMatch) {
-        const msg: StreamMessage = { id: mkId(), type: "narration", text: `${playerName}${doMatch[1]}` };
-        pushMessages(msg);
-        streamRef.current = [...streamRef.current, msg];
-      }
-      if (!sayMatch && !doMatch) {
-        const msg: StreamMessage = { id: mkId(), type: "narration", text: `${playerName}：${actionText}` };
-        pushMessages(msg);
-        streamRef.current = [...streamRef.current, msg];
-      }
-    }
     // Fork: round divider — every declaration round starts with a clear visual break
     pushMessages({ id: mkId(), type: "divider", text: `ROUND ${(save.keyChoices?.length || 0) + 1}` });
+    if (!skipDisplay) {
+      // Fork: player declaration → declCard (say / do / dice in one card)
+      // Dice comes from the pre-rolled check in submitDeclarationWithCheck (pendingPlayerDiceRef)
+      const sayMatch = actionText.match(/说：「(.+?)」/);
+      const doMatch = actionText.match(/做：(.+)/);
+      const say = sayMatch?.[1] || (!doMatch ? actionText : undefined);
+      const doText = doMatch?.[1];
+      const dice = pendingPlayerDiceRef.current;
+      pendingPlayerDiceRef.current = undefined;
+      const card: StreamMessage = {
+        id: mkId(), type: "declCard", speaker: playerName, text: "",
+        decl: { who: playerName, say, do: doText, dice },
+      };
+      pushMessages(card);
+      streamRef.current = [...streamRef.current, card];
+    }
     setCurrentChoices(null); setCurrentTopics(null);
     setEventContinueLoading(true);
     setLastFailedAction(actionText);  // save immediately so it persists if interrupted
@@ -758,7 +754,9 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       // Include full stream log (narration + NPC + player + character + rolls) so DM sees free-chat context too
       const prevDialogue = streamRef.current
         .filter(m => m.type !== "system" && m.type !== "divider")
-        .map(m => m.speaker ? `${m.speaker}: ${m.text}` : m.text)
+        .map(m => m.type === "declCard" && m.decl
+          ? `${m.decl.who}: ${[m.decl.say ? `说：「${m.decl.say}」` : "", m.decl.do ? `做：${m.decl.do}` : "", m.decl.dice ? `（宣言检定 ${m.decl.dice.skill}${m.decl.dice.value}：D100=${m.decl.dice.roll}，结果由你演出）` : ""].filter(Boolean).join(" ")}`
+          : (m.speaker ? `${m.speaker}: ${m.text}` : m.text))
         .join("\n");
 
 
@@ -773,6 +771,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           setLoadingPhase("companions");
           for (const cid of pendingIds) {
             const declAgent = save.agents.find(a => a.characterId === cid);
+            let declPendingDice: { skill: string; value: number; roll: number; level: string; detail?: string } | undefined;
             // Fork 十二期: companion remembers their OWN private talks (lockedLog filtered by who)
             const ownTalks = (save.lockedLog || []).filter(e => e.who === (characters.find(c => c.id === cid)?.name)).slice(-4);
             const memoryHint = ownTalks.length ? `【你的私下记忆】（别人不知道你知道这些）\n${ownTalks.map(e => `${e.day} 你与${e.npc || "某人"}私下谈过：${e.text}`).join("\n")}\n这些记忆影响你的言行（欲言又止/改变态度/私下行动），但不要主动透露内容。` : undefined;
@@ -799,10 +798,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               const edition2 = is7th ? "coc7" as const : "coc6" as const;
               const check = skillCheckValue(declAgent.sheet, decl.skillCheck, declAgent.stats, edition2);
               const rollR = rollD100(check.value, edition2);
-              const rLabel = rollR.level === "crit" ? "大成功" : rollR.level === "hard" ? "困难成功" : rollR.level === "success" ? "成功" : rollR.level === "fumble" ? "大失败" : "失败";
-              const declRollMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${decl.speaker} · ${decl.action}（${check.source} ${check.value}）`, text: `D100 = ${rollR.roll} → ${rLabel}`, emotion: rollR.level === "success" || rollR.level === "hard" || rollR.level === "crit" ? "success" : "fail" };
-              pushMessages(declRollMsg);
-              streamRef.current = [...streamRef.current, declRollMsg];
+              declPendingDice = { skill: check.source, value: check.value, roll: rollR.roll, level: rollR.level, detail: "" };
               usedSkillsRef.current.add(check.source.replace(/\(.*\)$/, ""));
             }
             if (declAgent?.sheet) {
@@ -826,15 +822,26 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                 }
               }
             }
-            if (decl.speech && decl.speech !== "……") {
-              const msg: StreamMessage = { id: mkId(), type: "character", speaker: decl.speaker, text: decl.speech, emotion: decl.emotion };
-              pushMessages(msg);
-              streamRef.current = [...streamRef.current, msg];
-            }
-            if (decl.action && decl.action !== "跟随队伍" && decl.action !== "沉默不动") {
-              const msg: StreamMessage = { id: mkId(), type: "narration", text: `${decl.speaker}：${decl.action}` };
-              pushMessages(msg);
-              streamRef.current = [...streamRef.current, msg];
+            // Fork: one declCard per companion — say / do / dice in a compact card
+            {
+              const card: StreamMessage = {
+                id: mkId(),
+                type: "declCard",
+                speaker: decl.speaker,
+                text: "",
+                emotion: decl.emotion,
+                decl: {
+                  who: decl.speaker,
+                  say: decl.speech && decl.speech !== "……" ? decl.speech : undefined,
+                  do: decl.action && decl.action !== "跟随队伍" && decl.action !== "沉默不动" ? decl.action : undefined,
+                  dice: declPendingDice,
+                  emotion: decl.emotion,
+                },
+              };
+              if (card.decl.say || card.decl.do || card.decl.dice) {
+                pushMessages(card);
+                streamRef.current = [...streamRef.current, card];
+              }
             }
           }
         }
@@ -1266,6 +1273,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
   const runGrowthRollRef = useRef<(s: GameSave, skills?: string[]) => GameSave>((s) => s);
   // Skills used during the current event (ref so growth roll after resolve can read them)
   const usedSkillsRef = useRef<Set<string>>(new Set());
+  // Fork: dice pre-rolled in submitDeclarationWithCheck → rides on the player declCard
+  const pendingPlayerDiceRef = useRef<{ skill: string; value: number; roll: number; level: string; detail?: string } | undefined>(undefined);
   // Fork: skills that already failed this scene (soft re-roll guard → pushed check / KP adjudication)
   const failedSkillsRef = useRef<Set<string>>(new Set());
   // Fork 八期B: locked private-talk log (in-memory mirror of save.lockedLog; reveal at ending)
@@ -1713,10 +1722,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       const rLabel = r.level === "crit" ? "大成功" : r.level === "hard" ? "困难成功" : r.level === "success" ? "成功" : r.level === "fumble" ? "大失败" : "失败";
       const success = r.level !== "fail" && r.level !== "fumble";
       if (!success) failedSkillsRef.current.add(skill);
-      const rollText = mode !== "none" ? `D100 = ${r.roll} ${r.detail} → ${rLabel}` : `D100 = ${r.roll} → ${rLabel}`;
-      const rollMsg: StreamMessage = { id: mkId(), type: "roll", speaker: `${userIdentity?.name || "你"} · ${action || speech}（${check.source} ${check.value}）`, text: rollText, emotion: success ? "success" : "fail" };
-      pushMessages(rollMsg);
-      streamRef.current = [...streamRef.current, rollMsg];
+      // Fork: dice result rides on the player declCard (no standalone roll message)
+      pendingPlayerDiceRef.current = { skill: check.source, value: check.value, roll: r.roll, level: r.level, detail: mode !== "none" ? r.detail : "" };
       usedSkillsRef.current.add(check.source.replace(/\(.*\)$/, ""));
       persistSave({ ...save, checkedSkills: [...new Set([...(save.checkedSkills || []), check.source.replace(/\(.*\)$/, "")])] });
       // 7th luck spend on player-chosen checks
@@ -1826,7 +1833,9 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       // Build DM context
       const prevDialogue = recentStream
         .filter(m => m.type !== "system" && m.type !== "divider")
-        .map(m => m.speaker ? `${m.speaker}: ${m.text}` : m.text)
+        .map(m => m.type === "declCard" && m.decl
+          ? `${m.decl.who}: ${[m.decl.say ? `说：「${m.decl.say}」` : "", m.decl.do ? `做：${m.decl.do}` : "", m.decl.dice ? `（宣言检定 ${m.decl.dice.skill}${m.decl.dice.value}：D100=${m.decl.dice.roll}，结果由你演出）` : ""].filter(Boolean).join(" ")}`
+          : (m.speaker ? `${m.speaker}: ${m.text}` : m.text))
         .join("\n");
 
       let dmCtx: import("@/lib/map-rpg-engine").DMContext;

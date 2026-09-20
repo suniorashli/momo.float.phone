@@ -268,20 +268,37 @@ function MessageItem({
         </div>
       );
 
-    case "roll":
+    // Fork: dice card — shared visual language with declCard (die face + verdict badge)
+    case "roll": {
+      const ok = msg.emotion === "success";
+      const m = msg.text.match(/D100\s*=\s*(\d+)(.*?)(?:→|->)\s*(.+)$/s);
+      const rollNum = m ? m[1] : "";
+      const verdict = m ? m[3].trim() : msg.text;
+      const sub = m ? m[2].trim() : msg.speaker;
+      const c = ok ? "#8fbf6f" : "#c45050";
       return (
-        <div style={{ textAlign: "center", padding: "8px 0" }}>
-          <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 4 }}>
-            {msg.speaker}
-          </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "5px 0", padding: "6px 9px", borderRadius: 10, border: `1px solid ${c}55`, background: "var(--c-adv-input-bg)" }}>
           <div style={{
-            fontSize: "calc(22px*var(--app-text-scale,1))", fontWeight: 700, letterSpacing: "0.15em",
-            color: msg.emotion === "success" ? "#f0c060" : "#c44040",
+            width: 38, height: 38, borderRadius: 9, flexShrink: 0,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: "var(--c-adv-panel-bg)",
+            border: `1.5px solid ${c}`,
+            fontSize: "calc(16px*var(--app-text-scale,1))", fontWeight: 800, fontFamily: "Georgia, serif",
+            color: c,
           }}>
-            {msg.text}
+            {rollNum || "🎲"}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {msg.speaker}
+            </div>
+            <div style={{ fontSize: "calc(12px*var(--app-text-scale,1))", fontWeight: 700, color: c, letterSpacing: "0.06em" }}>
+              {verdict}
+            </div>
           </div>
         </div>
       );
+    }
 
     // Fork: round divider — a breathing bar marking "a new round of declarations begins"
     case "divider":
@@ -297,6 +314,77 @@ function MessageItem({
           <div style={{ flex: 1, height: 1, background: "linear-gradient(270deg, transparent, var(--c-adv-input-border))" }} />
         </div>
       );
+
+    // Fork: declaration card — say / do / dice in one compact card (the tabletop feel)
+    case "declCard": {
+      const d = msg.decl || { who: msg.speaker || "？", say: msg.text };
+      const dice = d.dice;
+      const lvlColor = dice
+        ? dice.level === "crit" ? "#e8b84a"
+        : dice.level === "hard" || dice.level === "success" ? "#8fbf6f"
+        : dice.level === "fumble" ? "#c45050"
+        : "#a08888";
+      return (
+        <div style={{
+          margin: "4px 0",
+          padding: "8px 10px 7px",
+          borderRadius: 12,
+          border: "1px solid var(--c-adv-input-border)",
+          background: "var(--c-adv-input-bg)",
+          position: "relative",
+          overflow: "hidden",
+        }}>
+          <div style={{ height: 2, position: "absolute", top: 0, left: 0, right: 0, background: `linear-gradient(90deg, ${lvlColor}44, transparent 70%)` }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+            <SpeakerAvatar src={avatarMap?.[d.who]} fallback={d.who?.[0]} size={16} />
+            <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", fontWeight: 700, color: "var(--c-adv-accent)", letterSpacing: "0.04em" }}>
+              {d.who}
+            </span>
+            <span style={{ fontSize: "calc(8px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", fontFamily: "monospace", letterSpacing: "0.2em" }}>宣言</span>
+            {d.emotion && emotionEmoji[d.emotion] && <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))" }}>{emotionEmoji[d.emotion]}</span>}
+          </div>
+          {d.say && d.say !== "……" && (
+            <div style={{ display: "flex", gap: 6, marginBottom: d.do || dice ? 3 : 0 }}>
+              <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", lineHeight: `${lineHeight * fontSize}px`, flexShrink: 0 }}>💬</span>
+              <div style={{ fontSize: fontSize * 0.97, lineHeight, color: "var(--c-adv-body)", whiteSpace: "pre-wrap" }}>{d.say}</div>
+            </div>
+          )}
+          {d.do && (
+            <div style={{ display: "flex", gap: 6, marginBottom: dice ? 3 : 0 }}>
+              <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", lineHeight: `${lineHeight * fontSize}px`, flexShrink: 0 }}>⚔</span>
+              <div style={{ fontSize: fontSize * 0.93, lineHeight, color: "var(--c-adv-text-dim)", whiteSpace: "pre-wrap" }}>{d.do}</div>
+            </div>
+          )}
+          {dice && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8, marginTop: 4,
+              padding: "5px 8px", borderRadius: 8,
+              background: "rgba(0,0,0,0.18)",
+              border: `1px solid ${lvlColor}55`,
+            }}>
+              <div style={{
+                width: 34, height: 34, borderRadius: 8, flexShrink: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: "var(--c-adv-panel-bg)",
+                border: `1.5px solid ${lvlColor}`,
+                fontSize: "calc(15px*var(--app-text-scale,1))", fontWeight: 800, fontFamily: "Georgia, serif",
+                color: lvlColor,
+              }}>
+                {dice.roll}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  🎲 {dice.skill} {dice.value}{dice.detail ? ` · ${dice.detail}` : ""}
+                </div>
+                <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", fontWeight: 700, color: lvlColor, letterSpacing: "0.08em" }}>
+                  {dice.level === "crit" ? "大成功 ✦" : dice.level === "hard" ? "困难成功" : dice.level === "success" ? "成功" : dice.level === "fumble" ? "大失败 ✖" : "失败"}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
 
     default:
       return null;
