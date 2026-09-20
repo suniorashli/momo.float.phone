@@ -320,9 +320,10 @@ function MessageItem({
       const d = msg.decl || { who: msg.speaker || "？", say: msg.text };
       const dice = d.dice;
       const lvlColor = dice
-        ? dice.level === "crit" ? "#e8b84a"
-        : dice.level === "hard" || dice.level === "success" ? "#8fbf6f"
-        : dice.level === "fumble" ? "#c45050"
+        ? (dice.level === "crit" ? "#e8b84a"
+          : dice.level === "hard" || dice.level === "success" ? "#8fbf6f"
+          : dice.level === "fumble" ? "#c45050"
+          : "#a08888")
         : "#a08888";
       return (
         <div style={{
