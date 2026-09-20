@@ -417,7 +417,7 @@ export type EventScene = {
 
 export type StreamMessage = {
   id: string;
-  type: "narration" | "npc" | "player" | "character" | "system" | "location" | "roll";
+  type: "narration" | "npc" | "player" | "character" | "system" | "location" | "roll" | "divider";
   speaker?: string;
   text: string;
   emotion?: string;

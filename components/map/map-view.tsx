@@ -736,6 +736,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         streamRef.current = [...streamRef.current, msg];
       }
     }
+    // Fork: round divider — every declaration round starts with a clear visual break
+    pushMessages({ id: mkId(), type: "divider", text: `ROUND ${(save.keyChoices?.length || 0) + 1}` });
     setCurrentChoices(null); setCurrentTopics(null);
     setEventContinueLoading(true);
     setLastFailedAction(actionText);  // save immediately so it persists if interrupted
@@ -755,7 +757,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
       // Include full stream log (narration + NPC + player + character + rolls) so DM sees free-chat context too
       const prevDialogue = streamRef.current
-        .filter(m => m.type !== "system")
+        .filter(m => m.type !== "system" && m.type !== "divider")
         .map(m => m.speaker ? `${m.speaker}: ${m.text}` : m.text)
         .join("\n");
 
@@ -1823,7 +1825,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
       // Build DM context
       const prevDialogue = recentStream
-        .filter(m => m.type !== "system")
+        .filter(m => m.type !== "system" && m.type !== "divider")
         .map(m => m.speaker ? `${m.speaker}: ${m.text}` : m.text)
         .join("\n");
 

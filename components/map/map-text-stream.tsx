@@ -283,6 +283,21 @@ function MessageItem({
         </div>
       );
 
+    // Fork: round divider — a breathing bar marking "a new round of declarations begins"
+    case "divider":
+      return (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 4px 6px", margin: "6px 0 2px" }}>
+          <div style={{ flex: 1, height: 1, background: "linear-gradient(90deg, transparent, var(--c-adv-input-border))" }} />
+          <span style={{
+            fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)",
+            fontFamily: "monospace", letterSpacing: "0.25em", whiteSpace: "nowrap",
+          }}>
+            {msg.text || "第 · 轮"}
+          </span>
+          <div style={{ flex: 1, height: 1, background: "linear-gradient(270deg, transparent, var(--c-adv-input-border))" }} />
+        </div>
+      );
+
     default:
       return null;
   }

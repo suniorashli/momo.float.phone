@@ -1528,7 +1528,7 @@ async function buildCompanionDeclarePromptPayload(
   const adventureConfig = loadAdventureInteractionConfig();
 
   // Fork 八期B: audience isolation — companions never see locked private talks (user's or others')
-  const filteredLog = (streamLog || []).filter(m => m.type !== "system" && !(m.audience && m.audience.includes("locked")));
+  const filteredLog = (streamLog || []).filter(m => m.type !== "system" && m.type !== "divider" && !(m.audience && m.audience.includes("locked")));
   const pastHistory: import("./chat-storage").ChatMessage[] = filteredLog.map((m, i) => ({
     id: m.id || `sl_${i}`,
     sessionId: "",
@@ -1543,7 +1543,12 @@ async function buildCompanionDeclarePromptPayload(
 1) 说：你想说的话（对队友/NPC/自言自语；也可以不说话）
 2) 做：你的行动宣言（调查、搜索、攀爬、攻击、跟随、原地观察……任选；也可以只是听和想，不行动）
 3) 如果你的行动需要检定，在skill_check字段写你用的技能名（侦查/聆听/图书馆使用/心理学/潜行/手枪/急救等，或属性名如意志/幸运）；不需要检定就留空
-4) 想清楚你为什么这么做——按你的人设和当前处境行动，不要人云亦云`,
+4) 想清楚你为什么这么做——按你的人设和当前处境行动，不要人云亦云
+
+【宣而不演·铁律】你只宣告意图，绝不演出结果：
+- 只说"我要翻开那本登记簿查昨夜的记录"，绝不说"翻开后我发现……"——结果由 KP 在所有人宣言后统一演出
+- 即使你在对话流里看到某次检定的骰点（那是别人的宣言），你也不知道结果内容——你的宣言里禁止出现任何"发现/得知/看到"的结果性描述
+- speech 同理：可以表达怀疑、猜测、打算（"这登记簿有点不对劲，我看看"），不可以宣布结论（"登记簿被涂改过了"）`,
     userIdentity?.name,
   );
   let historyContentFinal = options?.secretHint?.trim()
