@@ -14,11 +14,11 @@ const emotionEmoji: Record<string, string> = {
 
 export const ADVENTURE_THEMES = [
   { name: "暗夜古卷", preview: "#e8d0a0" },
-  { name: "粉彩甜心", preview: "#f8a0c8" },
-  { name: "旧纸书卷", preview: "#8b6914" },
-  { name: "青苹果园", preview: "#6aaa30" },
-  { name: "清水蓝天", preview: "#3a9cc8" },
-  { name: "暖阳卡通", preview: "#ff8820" },
+  { name: "日间晨光", preview: "#8a8478" },
+  { name: "旧纸书卷", preview: "#9a8b70" },
+  { name: "鼠尾草", preview: "#7f8f76" },
+  { name: "雾霭蓝", preview: "#7b8c99" },
+  { name: "陶土", preview: "#a18272" },
 ];
 
 type Props = {

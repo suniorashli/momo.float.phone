@@ -366,21 +366,21 @@
   --c-adv-bar-bg: rgba(10,10,15,0.95);
   --c-adv-bar-border: rgba(255,255,255,0.06);
   --c-adv-panel-bg: rgba(15,12,18,0.96);
-  --c-adv-text: #e0dcd5;
-  --c-adv-text-dim: rgba(255,255,255,0.5);
-  --c-adv-text-muted: rgba(255,255,255,0.25);
+  --c-adv-text: #ece8e1;
+  --c-adv-text-dim: rgba(255,255,255,0.68);
+  --c-adv-text-muted: rgba(255,255,255,0.42);
   --c-adv-accent: #e8d0a0;
   --c-adv-accent-dim: rgba(200,160,100,0.25);
-  --c-adv-icon: rgba(255,255,255,0.4);
+  --c-adv-icon: rgba(255,255,255,0.58);
   --c-adv-icon-active: rgba(255,200,100,0.6);
   --c-adv-npc-name: #e8d0a0;
   --c-adv-npc-border: rgba(200,160,100,0.3);
   --c-adv-player-name: rgba(140,180,220,0.8);
   --c-adv-player-border: rgba(140,180,220,0.35);
-  --c-adv-narration: rgba(255,255,255,0.35);
-  --c-adv-system: rgba(255,255,255,0.2);
+  --c-adv-narration: rgba(255,255,255,0.58);
+  --c-adv-system: rgba(255,255,255,0.36);
   --c-adv-location: #e8d0a0;
-  --c-adv-body: rgba(255,255,255,0.85);
+  --c-adv-body: rgba(255,255,255,0.93);
   --c-adv-choice-border: rgba(255,255,255,0.08);
   --c-adv-choice-bg: rgba(255,255,255,0.03);
   --c-adv-input-border: rgba(255,255,255,0.08);
@@ -408,31 +408,31 @@
 }
 
 [data-adventure-theme="1"] {
-  /* 可爱粉彩 */
-  --c-adv-bg: #fff5fa;
-  --c-adv-stream-bg: rgba(255,245,250,0.9);
-  --c-adv-bar-bg: rgba(255,240,248,0.95);
-  --c-adv-bar-border: rgba(220,180,200,0.3);
-  --c-adv-panel-bg: rgba(255,235,245,0.97);
-  --c-adv-text: #4a2838;
-  --c-adv-text-dim: rgba(80,40,60,0.5);
-  --c-adv-text-muted: rgba(80,40,60,0.3);
-  --c-adv-accent: #d080a8;
-  --c-adv-accent-dim: rgba(200,100,150,0.3);
-  --c-adv-icon: rgba(80,40,60,0.4);
-  --c-adv-icon-active: rgba(200,80,140,0.7);
-  --c-adv-npc-name: #b03070;
-  --c-adv-npc-border: rgba(200,100,150,0.4);
-  --c-adv-player-name: #4060b0;
-  --c-adv-player-border: rgba(64,96,176,0.35);
-  --c-adv-narration: rgba(120,70,100,0.7);
-  --c-adv-system: rgba(150,100,130,0.6);
-  --c-adv-location: #b03070;
-  --c-adv-body: rgba(50,30,40,0.88);
-  --c-adv-choice-border: rgba(200,100,150,0.25);
-  --c-adv-choice-bg: rgba(200,100,150,0.08);
-  --c-adv-input-border: rgba(200,150,180,0.3);
-  --c-adv-input-bg: rgba(255,230,240,0.5);
+  /* 日间晨光 — 低饱和暖灰（日间模式，长时间阅读不刺眼） */
+  --c-adv-bg: #f2f1ed;
+  --c-adv-stream-bg: rgba(242,241,237,0.92);
+  --c-adv-bar-bg: rgba(236,234,229,0.95);
+  --c-adv-bar-border: rgba(120,115,105,0.16);
+  --c-adv-panel-bg: rgba(248,247,244,0.97);
+  --c-adv-text: #3c3a35;
+  --c-adv-text-dim: rgba(60,58,53,0.62);
+  --c-adv-text-muted: rgba(60,58,53,0.38);
+  --c-adv-accent: #8a8478;
+  --c-adv-accent-dim: rgba(138,132,120,0.22);
+  --c-adv-icon: rgba(60,58,53,0.45);
+  --c-adv-icon-active: rgba(122,112,96,0.7);
+  --c-adv-npc-name: #7a6a58;
+  --c-adv-npc-border: rgba(122,106,88,0.28);
+  --c-adv-player-name: #6b7a88;
+  --c-adv-player-border: rgba(107,122,136,0.3);
+  --c-adv-narration: rgba(70,66,60,0.72);
+  --c-adv-system: rgba(90,86,80,0.55);
+  --c-adv-location: #7a6a58;
+  --c-adv-body: rgba(50,48,44,0.9);
+  --c-adv-choice-border: rgba(120,115,105,0.18);
+  --c-adv-choice-bg: rgba(120,115,105,0.06);
+  --c-adv-input-border: rgba(120,115,105,0.22);
+  --c-adv-input-bg: rgba(232,230,225,0.6);
   --c-adv-msg-radius: 16px;
   --c-adv-msg-padding: 10px 14px;
   --c-adv-msg-border-style: solid;
@@ -456,31 +456,31 @@
 }
 
 [data-adventure-theme="2"] {
-  /* 文艺书卷 */
-  --c-adv-bg: #f8f0dc;
-  --c-adv-stream-bg: rgba(248,240,220,0.9);
-  --c-adv-bar-bg: rgba(245,235,210,0.95);
-  --c-adv-bar-border: rgba(160,130,80,0.25);
-  --c-adv-panel-bg: rgba(240,228,200,0.97);
-  --c-adv-text: #342010;
-  --c-adv-text-dim: rgba(60,40,20,0.5);
-  --c-adv-text-muted: rgba(60,40,20,0.3);
-  --c-adv-accent: #7a5a10;
-  --c-adv-accent-dim: rgba(120,90,16,0.3);
-  --c-adv-icon: rgba(60,40,20,0.4);
-  --c-adv-icon-active: rgba(120,80,20,0.7);
-  --c-adv-npc-name: #5a2a05;
-  --c-adv-npc-border: rgba(120,70,30,0.35);
-  --c-adv-player-name: #2a4a8a;
-  --c-adv-player-border: rgba(42,74,138,0.35);
-  --c-adv-narration: rgba(80,60,35,0.7);
-  --c-adv-system: rgba(100,80,50,0.6);
-  --c-adv-location: #5a2a05;
-  --c-adv-body: rgba(40,28,12,0.88);
-  --c-adv-choice-border: rgba(120,70,30,0.2);
-  --c-adv-choice-bg: rgba(120,70,30,0.06);
-  --c-adv-input-border: rgba(160,130,80,0.3);
-  --c-adv-input-bg: rgba(240,230,200,0.5);
+  /* 旧纸书卷 — 低饱和牛皮纸 */
+  --c-adv-bg: #f0ebe2;
+  --c-adv-stream-bg: rgba(240,235,226,0.92);
+  --c-adv-bar-bg: rgba(233,227,216,0.95);
+  --c-adv-bar-border: rgba(130,115,95,0.18);
+  --c-adv-panel-bg: rgba(246,242,235,0.97);
+  --c-adv-text: #4a4136;
+  --c-adv-text-dim: rgba(74,65,54,0.6);
+  --c-adv-text-muted: rgba(74,65,54,0.36);
+  --c-adv-accent: #9a8b70;
+  --c-adv-accent-dim: rgba(154,139,112,0.24);
+  --c-adv-icon: rgba(74,65,54,0.45);
+  --c-adv-icon-active: rgba(140,122,94,0.72);
+  --c-adv-npc-name: #8a7250;
+  --c-adv-npc-border: rgba(138,114,80,0.3);
+  --c-adv-player-name: #6a7a8a;
+  --c-adv-player-border: rgba(106,122,138,0.3);
+  --c-adv-narration: rgba(80,70,58,0.7);
+  --c-adv-system: rgba(100,90,76,0.55);
+  --c-adv-location: #8a7250;
+  --c-adv-body: rgba(58,50,40,0.9);
+  --c-adv-choice-border: rgba(130,115,95,0.2);
+  --c-adv-choice-bg: rgba(130,115,95,0.06);
+  --c-adv-input-border: rgba(130,115,95,0.24);
+  --c-adv-input-bg: rgba(232,226,215,0.6);
   --c-adv-msg-radius: 4px;
   --c-adv-msg-padding: 10px 16px;
   --c-adv-msg-border-style: dashed;
@@ -504,31 +504,31 @@
 }
 
 [data-adventure-theme="3"] {
-  /* 青苹果 — 清新黄绿，像咬一口青苹果 */
-  --c-adv-bg: #f4f9ee;
-  --c-adv-stream-bg: rgba(240,248,230,0.92);
-  --c-adv-bar-bg: rgba(235,245,220,0.95);
-  --c-adv-bar-border: rgba(140,190,80,0.2);
-  --c-adv-panel-bg: rgba(240,248,228,0.97);
-  --c-adv-text: #2a3a18;
-  --c-adv-text-dim: rgba(50,70,30,0.5);
-  --c-adv-text-muted: rgba(50,70,30,0.3);
-  --c-adv-accent: #6aaa30;
-  --c-adv-accent-dim: rgba(106,170,48,0.3);
-  --c-adv-icon: rgba(80,130,40,0.45);
-  --c-adv-icon-active: rgba(90,160,40,0.8);
-  --c-adv-npc-name: #4a8a20;
-  --c-adv-npc-border: rgba(100,160,50,0.35);
-  --c-adv-player-name: #2868a0;
-  --c-adv-player-border: rgba(40,104,160,0.3);
-  --c-adv-narration: rgba(60,90,30,0.6);
-  --c-adv-system: rgba(80,120,40,0.45);
-  --c-adv-location: #4a8a20;
-  --c-adv-body: rgba(30,45,15,0.88);
-  --c-adv-choice-border: rgba(100,170,50,0.2);
-  --c-adv-choice-bg: rgba(100,170,50,0.06);
-  --c-adv-input-border: rgba(130,180,70,0.25);
-  --c-adv-input-bg: rgba(230,245,210,0.5);
+  /* 鼠尾草 — 低饱和灰绿 */
+  --c-adv-bg: #eaeee8;
+  --c-adv-stream-bg: rgba(234,238,232,0.92);
+  --c-adv-bar-bg: rgba(226,231,223,0.95);
+  --c-adv-bar-border: rgba(105,120,100,0.18);
+  --c-adv-panel-bg: rgba(242,245,240,0.97);
+  --c-adv-text: #3a4238;
+  --c-adv-text-dim: rgba(58,66,56,0.6);
+  --c-adv-text-muted: rgba(58,66,56,0.36);
+  --c-adv-accent: #7f8f76;
+  --c-adv-accent-dim: rgba(127,143,118,0.24);
+  --c-adv-icon: rgba(58,66,56,0.45);
+  --c-adv-icon-active: rgba(110,130,100,0.72);
+  --c-adv-npc-name: #6d7f62;
+  --c-adv-npc-border: rgba(109,127,98,0.3);
+  --c-adv-player-name: #6b7b88;
+  --c-adv-player-border: rgba(107,123,136,0.3);
+  --c-adv-narration: rgba(64,72,62,0.7);
+  --c-adv-system: rgba(84,92,80,0.55);
+  --c-adv-location: #6d7f62;
+  --c-adv-body: rgba(46,52,44,0.9);
+  --c-adv-choice-border: rgba(105,120,100,0.2);
+  --c-adv-choice-bg: rgba(105,120,100,0.06);
+  --c-adv-input-border: rgba(105,120,100,0.24);
+  --c-adv-input-bg: rgba(224,230,220,0.6);
   --c-adv-msg-radius: 12px;
   --c-adv-msg-padding: 10px 14px;
   --c-adv-msg-border-style: solid;
@@ -552,31 +552,31 @@
 }
 
 [data-adventure-theme="4"] {
-  /* 清水蓝天 — 清爽水蓝 */
-  --c-adv-bg: #e8f2f8;
-  --c-adv-stream-bg: rgba(225,240,250,0.95);
-  --c-adv-bar-bg: rgba(215,235,248,0.96);
-  --c-adv-bar-border: rgba(120,180,220,0.2);
-  --c-adv-panel-bg: rgba(220,238,250,0.97);
-  --c-adv-text: #1a3040;
-  --c-adv-text-dim: rgba(30,55,75,0.5);
-  --c-adv-text-muted: rgba(30,55,75,0.3);
-  --c-adv-accent: #3a9cc8;
-  --c-adv-accent-dim: rgba(58,156,200,0.3);
-  --c-adv-icon: rgba(40,110,160,0.45);
-  --c-adv-icon-active: rgba(50,140,200,0.8);
-  --c-adv-npc-name: #1878a8;
-  --c-adv-npc-border: rgba(60,150,200,0.35);
-  --c-adv-player-name: #7050a0;
-  --c-adv-player-border: rgba(112,80,160,0.3);
-  --c-adv-narration: rgba(30,70,100,0.55);
-  --c-adv-system: rgba(50,120,170,0.4);
-  --c-adv-location: #1878a8;
-  --c-adv-body: rgba(15,35,50,0.88);
-  --c-adv-choice-border: rgba(60,150,200,0.2);
-  --c-adv-choice-bg: rgba(60,150,200,0.06);
-  --c-adv-input-border: rgba(100,170,210,0.25);
-  --c-adv-input-bg: rgba(200,230,248,0.4);
+  /* 雾霭蓝 — 低饱和灰蓝 */
+  --c-adv-bg: #e9edf0;
+  --c-adv-stream-bg: rgba(233,237,240,0.92);
+  --c-adv-bar-bg: rgba(224,229,234,0.95);
+  --c-adv-bar-border: rgba(100,115,130,0.16);
+  --c-adv-panel-bg: rgba(241,244,247,0.97);
+  --c-adv-text: #39424a;
+  --c-adv-text-dim: rgba(57,66,74,0.6);
+  --c-adv-text-muted: rgba(57,66,74,0.36);
+  --c-adv-accent: #7b8c99;
+  --c-adv-accent-dim: rgba(123,140,153,0.22);
+  --c-adv-icon: rgba(57,66,74,0.45);
+  --c-adv-icon-active: rgba(100,124,142,0.72);
+  --c-adv-npc-name: #64798a;
+  --c-adv-npc-border: rgba(100,121,138,0.3);
+  --c-adv-player-name: #8a7a92;
+  --c-adv-player-border: rgba(138,122,146,0.3);
+  --c-adv-narration: rgba(62,72,82,0.7);
+  --c-adv-system: rgba(82,92,102,0.55);
+  --c-adv-location: #64798a;
+  --c-adv-body: rgba(45,53,60,0.9);
+  --c-adv-choice-border: rgba(100,115,130,0.2);
+  --c-adv-choice-bg: rgba(100,115,130,0.06);
+  --c-adv-input-border: rgba(100,115,130,0.22);
+  --c-adv-input-bg: rgba(220,228,234,0.6);
   --c-adv-msg-radius: 14px;
   --c-adv-msg-padding: 10px 14px;
   --c-adv-msg-border-style: solid;
@@ -600,31 +600,31 @@
 }
 
 [data-adventure-theme="5"] {
-  /* 卡通风 — 明亮鲜艳、大圆角、活泼配色 */
-  --c-adv-bg: #fff8e8;
-  --c-adv-stream-bg: rgba(255,250,235,0.92);
-  --c-adv-bar-bg: rgba(255,245,225,0.95);
-  --c-adv-bar-border: rgba(255,180,60,0.25);
-  --c-adv-panel-bg: rgba(255,248,230,0.97);
-  --c-adv-text: #3a2810;
-  --c-adv-text-dim: rgba(60,40,20,0.5);
-  --c-adv-text-muted: rgba(60,40,20,0.3);
-  --c-adv-accent: #ff8820;
-  --c-adv-accent-dim: rgba(255,136,32,0.3);
-  --c-adv-icon: rgba(200,120,30,0.5);
-  --c-adv-icon-active: rgba(255,136,32,0.85);
-  --c-adv-npc-name: #e06020;
-  --c-adv-npc-border: rgba(224,96,32,0.35);
-  --c-adv-player-name: #3080d0;
-  --c-adv-player-border: rgba(48,128,208,0.3);
-  --c-adv-narration: rgba(80,50,20,0.6);
-  --c-adv-system: rgba(180,120,40,0.5);
-  --c-adv-location: #e06020;
-  --c-adv-body: rgba(40,25,10,0.88);
-  --c-adv-choice-border: rgba(255,150,50,0.25);
-  --c-adv-choice-bg: rgba(255,180,80,0.08);
-  --c-adv-input-border: rgba(255,180,80,0.25);
-  --c-adv-input-bg: rgba(255,240,210,0.5);
+  /* 陶土 — 低饱和赤陶暖调 */
+  --c-adv-bg: #f1ebe6;
+  --c-adv-stream-bg: rgba(241,235,230,0.92);
+  --c-adv-bar-bg: rgba(234,226,220,0.95);
+  --c-adv-bar-border: rgba(140,110,95,0.18);
+  --c-adv-panel-bg: rgba(247,242,238,0.97);
+  --c-adv-text: #473c36;
+  --c-adv-text-dim: rgba(71,60,54,0.6);
+  --c-adv-text-muted: rgba(71,60,54,0.36);
+  --c-adv-accent: #a18272;
+  --c-adv-accent-dim: rgba(161,130,114,0.24);
+  --c-adv-icon: rgba(71,60,54,0.45);
+  --c-adv-icon-active: rgba(150,112,92,0.72);
+  --c-adv-npc-name: #96705c;
+  --c-adv-npc-border: rgba(150,112,92,0.3);
+  --c-adv-player-name: #6e7f8c;
+  --c-adv-player-border: rgba(110,127,140,0.3);
+  --c-adv-narration: rgba(78,66,58,0.7);
+  --c-adv-system: rgba(98,86,78,0.55);
+  --c-adv-location: #96705c;
+  --c-adv-body: rgba(56,47,42,0.9);
+  --c-adv-choice-border: rgba(140,110,95,0.2);
+  --c-adv-choice-bg: rgba(140,110,95,0.06);
+  --c-adv-input-border: rgba(140,110,95,0.24);
+  --c-adv-input-bg: rgba(232,224,217,0.6);
   --c-adv-msg-radius: 18px;
   --c-adv-msg-padding: 12px 16px;
   --c-adv-msg-border-style: solid;

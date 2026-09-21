@@ -3074,7 +3074,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
             padding: "18px 16px",
           }}>
-            <div style={{ fontSize: "calc(15px*var(--app-text-scale,1))", fontWeight: 700, color: "rgba(190,170,240,0.95)", marginBottom: 3 }}>🎭 选择你的密档线</div>
+            <div style={{ fontSize: "calc(15px*var(--app-text-scale,1))", fontWeight: 700, color: "var(--c-adv-accent)", marginBottom: 3 }}>🎭 选择你的密档线</div>
             <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
               本模组为每位调查员准备了私人剧情线——先选你要扮演哪条，剩下的由 KP 按各角色的人设贴合度分配给同伴。
             </div>
@@ -3084,13 +3084,13 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                 return (
                   <button key={l.ho} type="button" onClick={() => hoPickPlayer(l.ho)} style={{
                     padding: "9px 11px", borderRadius: 10, textAlign: "left", fontFamily: "inherit",
-                    border: `1px solid ${picked ? "rgba(190,170,240,0.55)" : "var(--c-adv-input-border)"}`,
-                    background: picked ? "rgba(190,170,240,0.12)" : "var(--c-adv-input-bg)",
+                    border: `1px solid ${picked ? "var(--c-adv-accent)" : "var(--c-adv-input-border)"}`,
+                    background: picked ? "var(--c-adv-choice-bg)" : "var(--c-adv-input-bg)",
                     cursor: "pointer",
                   }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
-                      <span style={{ fontSize: "calc(12px*var(--app-text-scale,1))", fontWeight: 700, color: picked ? "rgba(190,170,240,0.95)" : "var(--c-adv-text)" }}>{l.ho}</span>
-                      {picked && <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(190,170,240,0.8)", fontFamily: "monospace", letterSpacing: "0.15em" }}>✓ 你</span>}
+                      <span style={{ fontSize: "calc(12px*var(--app-text-scale,1))", fontWeight: 700, color: picked ? "var(--c-adv-accent)" : "var(--c-adv-text)" }}>{l.ho}</span>
+                      {picked && <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", fontFamily: "monospace", letterSpacing: "0.15em" }}>✓ 你</span>}
                     </div>
                     <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-dim)", lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                       {l.introStory || "（无导入剧情摘要）"}
@@ -3127,7 +3127,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               <button type="button" onClick={hoAssignConfirm} disabled={!hoAssignMap["__player__"]} style={{
                 flex: 1, padding: "9px 0", borderRadius: 9,
                 border: "none", background: "rgba(190,170,240,0.25)",
-                color: "rgba(220,210,250,0.95)", fontWeight: 600,
+                color: "var(--c-adv-accent)", fontWeight: 600,
                 fontSize: "calc(11px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
               }}>
                 确认并开始
@@ -4158,7 +4158,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                 {/* My secret card (fork 八期A — visible to user only, reveal timing is theirs) */}
                 {save.mySecret && (
                   <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "rgba(150,120,220,0.08)", border: "1px solid rgba(150,120,220,0.25)" }}>
-                    <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(190,170,240,0.9)", marginBottom: 4, fontFamily: "monospace", letterSpacing: "0.1em" }}>🤫 你保守的秘密</div>
+                    <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", marginBottom: 4, fontFamily: "monospace", letterSpacing: "0.1em" }}>🤫 你保守的秘密</div>
                     <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-body)", lineHeight: 1.6 }}>{save.mySecret.content}</div>
                     {save.mySecret.link && <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", marginTop: 4 }}>与真相的关联：{save.mySecret.link}</div>}
                     {save.mySecret.informant && <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)" }}>知道更多的人：{save.mySecret.informant}</div>}
