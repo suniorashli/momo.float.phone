@@ -95,7 +95,8 @@ const HO_LINE_EXTRACT_PROMPT = `你是TRPG模组的资料整理员。文本里�
 
 只输出标签块纯文本，不要JSON：
 [HO]HO代号（如HO1、HO2；用文本里的代号；若文本用真名称呼调查员，写"代号（真名）"）
-[导入剧情]TA入团前的故事摘要（3-6句：TA与哪些NPC是什么关系、发生了什么关键事件、有什么约定或承诺——这些是TA的既定背景。车卡里的人物设定/性格/职业/背景故事也并入这里概述）
+[职业]车卡给这个HO规定的职业（如搞笑艺人、记者、医生；秘密团常要求固定职业，务必照抄原文；文本没写职业才留空）
+[导入剧情]TA入团前的故事摘要（3-6句：TA与哪些NPC是什么关系、发生了什么关键事件、有什么约定或承诺——这些是TA的既定背景。车卡里的人物设定/性格/背景故事也并入这里概述）
 [关系1]NPC名：关系描述（每个相关NPC一组，编号递增；只写该HO的私人关系）
 [事件1]触发条件|事件摘要（格式：Day1夜晚/见到尤金之后/XX死后 等触发时机 | 3-8句事件内容——TA会经历什么、NPC会对TA说什么/做什么、可能的选项与分支）
 （事件有几条写几条，编号递增）
@@ -261,6 +262,7 @@ export async function extractInvestigatorLines(
         const ho = (f[hk] || "").trim();
         if (!ho) continue;
         const intro = f["导入剧情"] || "";
+        const occupation = (f["职业"] || "").trim() || undefined;
         const relations = Object.keys(f)
           .filter(k => /^关系\d*$/.test(k))
           .map(k => f[k] || "")
@@ -280,10 +282,11 @@ export async function extractInvestigatorLines(
         const existing = all.find(l => l.ho === ho);
         if (existing) {
           if (!existing.introStory && intro) existing.introStory = intro;
+          if (!existing.occupation && occupation) existing.occupation = occupation;
           existing.relations.push(...relations.filter(r => !existing.relations.some(x => x.npc === r.npc)));
           existing.events.push(...events);
         } else if (intro || relations.length || events.length) {
-          all.push({ ho, introStory: intro, relations, events });
+          all.push({ ho, introStory: intro, relations, events, ...(occupation ? { occupation } : {}) });
         }
       }
     }

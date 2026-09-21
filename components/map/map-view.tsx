@@ -324,7 +324,11 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       // （旧的自动按序绑定已移除）
       // Player persona first → the review modal IS your card being handed over
       try {
-        const persona = await importInvestigator(myName, `（用户本人）${introSource}`, skeleton, save.mySecret, apiConfig);
+        // Fork: HO occupation requirement — the player's assigned line dictates their job
+        const myHoOcc = save.boundLineHo?.["__player__"]
+          ? save.investigatorLines?.find(l => l.ho === save.boundLineHo["__player__"])?.occupation
+          : undefined;
+        const persona = await importInvestigator(myName, `（用户本人）${introSource}`, skeleton, save.mySecret, apiConfig, myHoOcc);
         if (!cancelled && persona) {
           persistSave({ ...saveRef.current, myPersona: { ...persona, confirmed: false } });
           pushMessages({ id: mkId(), type: "system", text: "📇 KP 将一张身份卡推到你面前——请过目（弹窗已打开，可修改后确认）" });
@@ -337,7 +341,11 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         const ch = characters.find(c => c.id === a.characterId);
         const name = ch?.name || "同伴";
         try {
-          const persona = await importInvestigator(name, ch?.personality || "", skeleton, save.agentSecrets?.[a.characterId], apiConfig);
+          // Fork: HO occupation requirement — each companion's assigned line dictates their job
+          const compHoOcc = save.boundLineHo?.[a.characterId]
+            ? save.investigatorLines?.find(l => l.ho === save.boundLineHo[a.characterId])?.occupation
+            : undefined;
+          const persona = await importInvestigator(name, ch?.personality || "", skeleton, save.agentSecrets?.[a.characterId], apiConfig, compHoOcc);
           if (!cancelled && persona) {
             persistSave({
               ...saveRef.current,
@@ -395,8 +403,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       });
       const next: Record<string, string> = { ...hoAssignMap };
       if (freeLines.length && companions.length) {
-        const sys = `你是COC跑团的KP。若干条调查员密档线（HO）待分配给同伴角色——按人设贴合度分配：角色卡性格/性别/气质与HO导入剧情的契合度优先（比如HO线是恋爱剧情而角色卡是恋爱脑，很贴；HO线是硬汉复仇而角色卡柔弱傲娇，不贴）。每条HO只给一个角色，一个角色至多一条；HO数量≥角色数量时，多余的HO留在池中无人扮演（写"无人"）。只输出：每行"角色名=HO代号"或"角色名=无人"。`;
-        const user = `待分配HO线：\n${freeLines.map(l => `${l.ho}：${l.introStory.slice(0, 200)}${l.relations.length ? `（关系：${l.relations.map(r => `${r.npc}=${r.relation}`).join("；")}）` : ""}`).join("\n")}\n\n同伴角色：\n${companions.map(c => `${c.name}：${c.personality || "（无性格描述）"}`).join("\n")}\n\n玩家已选：${takenHo || "（未选）"}`;
+        const sys = `你是COC跑团的KP。若干条调查员密档线（HO）待分配给同伴角色——分配优先级：①HO车卡规定了职业的（标了"职业:"），优先分给角色卡性格/气质/性别与之相配的角色，且该角色的身份卡将直接采用此职业；②再按人设贴合度分配其余：角色卡性格与HO导入剧情的契合度优先（比如HO线是恋爱剧情而角色卡是恋爱脑，很贴；HO线是硬汉复仇而角色卡柔弱傲娇，不贴）。每条HO只给一个角色，一个角色至多一条；HO数量≥角色数量时，多余的HO留在池中无人扮演（写"无人"）。只输出：每行"角色名=HO代号"或"角色名=无人"。`;
+        const user = `待分配HO线：\n${freeLines.map(l => `${l.ho}${l.occupation ? `（职业:${l.occupation}——此HO有固定职业要求，优先给适合的角色）` : ""}：${l.introStory.slice(0, 200)}${l.relations.length ? `（关系：${l.relations.map(r => `${r.npc}=${r.relation}`).join("；")}）` : ""}`).join("\n")}\n\n同伴角色：\n${companions.map(c => `${c.name}：${c.personality || "（无性格描述）"}`).join("\n")}\n\n玩家已选：${takenHo || "（未选）"}`;
         const result = await (await import("@/lib/api-helpers")).simpleLLMCall(apiConfig, [
           { role: "system", content: sys },
           { role: "user", content: user },
@@ -2454,7 +2462,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       {streamMessages.some(m => m.type === "ooc") && (
         <div style={{ padding: "0 12px", flexShrink: 0 }}>
           <button onClick={() => setShowOocPanel(!showOocPanel)} style={{
-            width: "100%", padding: "4px 0",
+            width: "100%", padding: "7px 0", minHeight: 28,
             background: "none", border: "none",
             fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(140,200,255,0.55)", cursor: "pointer",
             fontFamily: "monospace", letterSpacing: "0.1em",
@@ -2504,8 +2512,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         </div>
       )}
 
-      {/* ═══ Text Stream ═══ */}
-      <div style={{ flex: 1, position: "relative", overflow: "hidden", background: "transparent", display: "flex", flexDirection: "column", zIndex: 1 }}>
+      {/* ═══ Text Stream ═══ (minHeight floor: the bottom bar must never squeeze this to a slit) */}
+      <div style={{ flex: 1, minHeight: 140, position: "relative", overflow: "hidden", background: "transparent", display: "flex", flexDirection: "column", zIndex: 1 }}>
         <MapTextStream
           messages={streamMessages.filter(m => m.type !== "ooc")}
           avatarMap={fullAvatarMap}
@@ -2572,7 +2580,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             </button>
           )}
           {inEvent && !freeMode && currentChoices && currentChoices.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 5 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 5, maxHeight: "32vh", overflowY: "auto" }}>
               {currentChoices.map((choice, i) => {
                 const missingItem = choice.requires && !save.director.keyItems.includes(choice.requires);
                 return (
@@ -2813,7 +2821,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
             <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
               {/* Fork: KP investigation hints (tappable → fills check skill) */}
               {inEvent && currentHints && currentHints.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "5px 0" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "5px 0", maxHeight: 92, overflowY: "auto" }}>
                   <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", fontFamily: "monospace", letterSpacing: "0.1em", lineHeight: "24px" }}>💡</span>
                   {currentHints.map((h, i) => (
                     <button key={i} type="button"
@@ -2836,7 +2844,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               )}
               {/* Fork: NPC talk topics (tappable → fills speech input) */}
               {inEvent && currentTopics && currentTopics.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "2px 0" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: "2px 0", maxHeight: 92, overflowY: "auto" }}>
                   <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", fontFamily: "monospace", letterSpacing: "0.1em", lineHeight: "24px" }}>❓</span>
                   {currentTopics.map((t, i) => (
                     <button key={i} type="button"

@@ -166,6 +166,7 @@ export type InvestigatorLine = {
   introStory: string;                            // 导入剧情摘要（关键事实：认识谁、什么关系、约定）
   relations: { npc: string; relation: string }[]; // 与 NPC 的私人关系
   events: InvestigatorLineEvent[];               // 个人线事件（按天/条件触发，KP 演出）
+  occupation?: string;                           // fork: 车卡要求的职业（秘密团固定职业，如"搞笑艺人"）——导入身份卡时必须采用
   boundCharacterId?: string;                     // 绑定角色卡 id；"__player__" = 玩家本人；空 = 未绑定
 };
 

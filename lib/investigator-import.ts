@@ -30,6 +30,12 @@ const PROMPT_SECRET_BLOCK = `
 补充：这是一个秘密团，每位调查员会拿到一个个人秘密。TA的秘密是：「{secret}」（与真相的咬合：{link}）。
 [背景钩子]必须与这个秘密自然衔接——TA在意这个案子的私人原因应与其秘密相关或相邻，但不要在背景里写破秘密内容。`;
 
+const PROMPT_HO_BLOCK = `
+
+补充：这是一个固定车卡的秘密团——TA被分配到一条指定调查员线（HO），车卡规定了TA的职业。
+TA的HO职业要求：「{ho_occupation}」。
+【职业铁律】[时代职业]必须就是「{ho_occupation}」（可按时代微调措辞，如"搞笑艺人"在不同时代可为"宫廷俳优/杂耍艺人/喜剧演员"，但职业内核不得更换）。角色卡原职业作废，[身份背景]要能解释TA为何从事这个职业并与HO导入剧情衔接。[技能模板]从候选中选与该职业最接近的。`;
+
 /** Adapt one companion's persona to the module. Returns null on failure (caller falls back to raw card). */
 export async function importInvestigator(
   characterName: string,
@@ -37,10 +43,14 @@ export async function importInvestigator(
   skeleton: WorldSkeleton,
   secret?: PersonalSecret,
   apiConfig: ApiConfig,
+  hoOccupation?: string,
 ): Promise<InvestigatorPersona | null> {
   const eraGuess = skeleton.world.lore.slice(0, 120) || skeleton.world.name;
   const occPool = OCCUPATIONS.map(o => o.name).join("/");
   let prompt = IMPORT_PROMPT.replace("{occ_pool}", occPool);
+  if (hoOccupation?.trim()) {
+    prompt += PROMPT_HO_BLOCK.split("{ho_occupation}").join(hoOccupation.trim());
+  }
   if (secret) {
     prompt += PROMPT_SECRET_BLOCK.replace("{secret}", secret.content).replace("{link}", secret.link || "未注明");
   }
