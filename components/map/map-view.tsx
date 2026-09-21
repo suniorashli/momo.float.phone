@@ -429,7 +429,29 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       const line = boundLines.find(l => l.ho === ho);
       if (line) line.boundCharacterId = cid;
     }
-    persistSave({ ...save, boundLineHo: hoAssignMap, investigatorLines: boundLines });
+    // Fork 导入阶段: the party does NOT start together — scatter each bound member to their
+    // HO line's opening place. The KP narrates each intro separately; act 1 starts after all
+    // intros resolve (introPhase gates it).
+    let scattered: GameSave = { ...save, boundLineHo: hoAssignMap, investigatorLines: boundLines, introPhase: true };
+    const placeToNode = (place: string | undefined) => {
+      if (!place) return undefined;
+      return allNodes.find(n => n.name === place) || allNodes.find(n => n.name.includes(place) || place.includes(n.name));
+    };
+    {
+      const myLine = boundLines.find(l => l.ho === hoAssignMap["__player__"]);
+      const myNode = placeToNode(myLine?.introPlace);
+      if (myNode) scattered = { ...scattered, currentNodeId: myNode.id, currentNodeType: myNode.type, discoveredNodes: [...new Set([...scattered.discoveredNodes, myNode.id])], visitedNodes: [...new Set([...scattered.visitedNodes, myNode.id])] };
+      scattered = {
+        ...scattered,
+        agents: scattered.agents.map(a => {
+          const line = boundLines.find(l => l.ho === hoAssignMap[a.characterId]);
+          const node = placeToNode(line?.introPlace);
+          if (!node) return a;
+          return { ...a, currentNodeId: node.id, currentNodeType: node.type, discoveredNodes: [...new Set([...a.discoveredNodes, node.id])], visitedNodes: [...new Set([...a.visitedNodes, node.id])] };
+        }),
+      };
+    }
+    persistSave(scattered);
     setHoAssignOpen(false);
     pushMessages({ id: mkId(), type: "system", text: "🎭 HO 密档线已分配——KP 开始分发身份卡" });
     // Player's own line → locked message right away (companions get theirs via lineHint during play)
@@ -750,8 +772,16 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           ...Object.entries(save.agentSecrets || {}).map(([cid, s]) => ({ who: charName(cid), secret: s })),
         ],
         // Fork: HO 密档——导入剧情与个人线（KP 可见全部；含绑定角色名映射与事件触发表）
-        ...(save.investigatorLines?.length ? {
-          investigatorLinesHint: save.investigatorLines.map(l => {
+        // Fork fix (data self-heal): pre-writeback saves have boundLineHo set but every
+        // line's boundCharacterId empty → rebuild from the map so old saves heal instantly.
+        // Fork 导入阶段: introPhase injected so the KP knows whether to play solo intros.
+        ...(save.investigatorLines?.length ? (() => {
+          const hoLines = save.investigatorLines!.map(l => l.boundCharacterId ? l : (() => {
+            const cid = Object.entries(save.boundLineHo || {}).find(([, ho]) => ho === l.ho)?.[0];
+            return cid ? { ...l, boundCharacterId: cid } : l;
+          })());
+          return {
+          investigatorLinesHint: hoLines.map(l => {
             const holder = l.boundCharacterId === "__player__" ? (userIdentity?.name || "你") : charName(l.boundCharacterId || "");
             const bind = holder ? `（${holder}）` : "（未绑定）";
             // Fork fix: mark the player's own line — without this the KP narrated whichever
@@ -763,7 +793,9 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               ...(l.events.length ? [`个人线事件（按触发条件演出，只有${holder || l.ho}在场时才发生；触发时走私聊幕，不当众展开）：${l.events.map(e => `[${e.trigger}] ${e.summary}`).join(" ⟂ ")}`] : []),
             ].join("\n");
           }).join("\n\n"),
-        } : {}),
+          introPhase: save.introPhase ?? false,
+          };
+        })() : {}),
         acts: skeleton.acts,
         currentAct: save.currentAct ?? 0,
         // Fork: 密档划账——已公开条目注入（KP 按标注守账）
@@ -920,7 +952,10 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
 
       const companionDecls: Declaration[] = [];
-      if (companionIds.length > 0) {
+      // Fork 导入阶段: intros are SOLO — companions are in their own opening scenes, not
+      // standing next to the player. Skip the shared declaration loop entirely; the KP
+      // narrates each companion's intro off-screen via side_scenes (locked records).
+      if (companionIds.length > 0 && !save.introPhase) {
         // Check which companions already completed (persisted in pendingEvent.completedCompanions)
         const alreadyDone = new Set(completedCompanionsRef.current);
 
@@ -1052,14 +1087,17 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       }
 
       // Fork 拆场: group members by current location (player + agents) for split narration
+      // (intro phase: everyone is in their OWN scene — no grouping, narration is solo)
       const groupsByLoc = new Map<string, string[]>();
       groupsByLoc.set(save.currentNodeId, ["{{user}}"]);
-      for (const a of save.agents) {
-        const list = groupsByLoc.get(a.currentNodeId) || [];
-        list.push(charName(a.characterId));
-        groupsByLoc.set(a.currentNodeId, list);
+      if (!save.introPhase) {
+        for (const a of save.agents) {
+          const list = groupsByLoc.get(a.currentNodeId) || [];
+          list.push(charName(a.characterId));
+          groupsByLoc.set(a.currentNodeId, list);
+        }
       }
-      const splitGroups = [...groupsByLoc.entries()].map(([nid, members]) => ({ where: nodeMap.get(nid)?.name || nid, members }));
+      const splitGroups = save.introPhase ? [] : [...groupsByLoc.entries()].map(([nid, members]) => ({ where: nodeMap.get(nid)?.name || nid, members }));
 
       // ── Phase 4: DM resolves all declarations ──
       setLoadingPhase("dm");
@@ -1072,6 +1110,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       try { dmCtx = JSON.parse(eventContext); } catch { dmCtx = { worldLore: "", currentLocation: "", eventType: "", eventBrief: "", companionNames: [], recentJournal: [], keyChoices: [], gameTime: "" }; }
       dmCtx.previousDialogue = prevDialogue;
       dmCtx.director = save.director;
+      // Fork 导入阶段: keep the flag fresh on every resolve (eventContext snapshot may be stale)
+      dmCtx.introPhase = save.introPhase ?? false;
       dmCtx.recentJournal = saveRef.current.journal.map(j => j.text);
       dmCtx.revealedDossier = save.revealedDossier || [];   // fork: 密档划账随裁决上下文注入
       dmCtx.splitGroups = splitGroups.length > 1 ? splitGroups : undefined;   // fork 拆场: 分场状态（>1 场时注入）
@@ -1079,6 +1119,27 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       const myLocationName = nodeMap.get(save.currentNodeId)?.name || "";
 
       const continuation = await resolveRound(dmCtx, allDeclarations, apiConfig);
+
+      // Fork 导入阶段: intro close-detection — when the player declares intent to converge
+      // (动身/汇合/前往X) during their own intro, the intro ends: introPhase off, companions
+      // converge to the act-1 stage location, and the module proper begins.
+      if (save.introPhase) {
+        const convergeIntent = /汇合|会合|动身|出发|前往|赶去|去找(他们|大家|同伴)|第一幕|开始冒险/.test(actionText);
+        if (convergeIntent || (ev as EventScene & { introDone?: boolean }).introDone) {
+          const act1Node = allNodes.find(n => n.name === skeleton.acts?.[0]?.nodes?.[0]) || allNodes.find(n => n.name.includes(String(skeleton.acts?.[0]?.nodes?.[0] || "")) || String(skeleton.acts?.[0]?.nodes?.[0] || "").includes(n.name));
+          const act1Id = act1Node?.id || save.currentNodeId;
+          save = {
+            ...save,
+            introPhase: false,
+            currentNodeId: act1Id,
+            currentNodeType: act1Node?.type || save.currentNodeType,
+            discoveredNodes: [...new Set([...save.discoveredNodes, act1Id])],
+            visitedNodes: [...new Set([...save.visitedNodes, act1Id])],
+            agents: save.agents.map(a => ({ ...a, currentNodeId: act1Id, currentNodeType: act1Node?.type || a.currentNodeType, discoveredNodes: [...new Set([...a.discoveredNodes, act1Id])], visitedNodes: [...new Set([...a.visitedNodes, act1Id])] })),
+          };
+          pushMessages({ id: mkId(), type: "system", text: `🎭 导入剧情落幕——诸位调查员各自的故事线在此交汇。第一幕「${skeleton.acts?.[0]?.title || "调查"}」正式开始，地点：${act1Node?.name || "?"}。` });
+        }
+      }
 
       // Update Director
       const ev = continuation as EventScene & { gained?: string[]; lost?: string[]; npcsInvolved?: string[]; moveTo?: string; worldEvents?: string[]; revealed?: string[] };
@@ -1385,17 +1446,22 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       }
 
       // Fork 八期B: KP-directed side scenes → locked log (reveal at ending)
+      // Fork 导入阶段: during intros the KP emits one intro vignette per companion per round —
+      // all of them land in the locked log (the user only sees "elsewhere, TA's story unfolds").
       let sideSceneEntries: NonNullable<GameSave["lockedLog"]> = [];
       {
         const ss = ((continuation as EventScene & { sideScenes?: { who: string; npc: string; intent?: string; summary?: string }[] }).sideScenes || []);
-        const sc = ss[0];
-        if (sc) {
-          const dayLabel = formatGameTime(newSave.gameDay, newSave.gameTime);
-          const me = userIdentity?.name || "你";
-          const entry = { id: `lock_${Date.now()}`, who: sc.who, npc: sc.npc, text: sc.summary || sc.intent || "（一场无人知晓的交谈）", day: dayLabel };
+        const me = userIdentity?.name || "你";
+        const dayLabel = formatGameTime(newSave.gameDay, newSave.gameTime);
+        for (const sc of (save.introPhase ? ss : ss.slice(0, 1))) {
+          const entry = { id: `lock_${Date.now()}_${sideSceneEntries.length}`, who: sc.who, npc: sc.npc, text: sc.summary || sc.intent || "（一场无人知晓的交谈）", day: dayLabel };
           // Push to user stream only if the user was part of it
           if (sc.who === me) {
             pushMessages({ id: mkId(), type: "narration", text: `🔒〔私聊·只有你和${sc.npc}在场〕${entry.text}`, audience: ["locked"] });
+          } else if (save.introPhase) {
+            // Fork 导入阶段: presence-only hint — the companion's intro is playing elsewhere;
+            // content stays sealed until the ending reveal
+            pushMessages({ id: mkId(), type: "system", text: `🔒 别处——${sc.who} 的故事正在展开（导入剧情·对调查员保密，结局揭晓时公开）` });
           }
           lockedLogRef.current = [...lockedLogRef.current, entry];
           sideSceneEntries = [...sideSceneEntries, entry];
@@ -2149,6 +2215,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       try { dmCtx = JSON.parse(eventContext); } catch { dmCtx = { worldLore: "", currentLocation: "", eventType: "", eventBrief: "", companionNames: [], recentJournal: [], keyChoices: [], gameTime: "" }; }
       dmCtx.previousDialogue = prevDialogue;
       dmCtx.director = save.director;
+      // Fork 导入阶段: keep the flag fresh on every resolve (eventContext snapshot may be stale)
+      dmCtx.introPhase = save.introPhase ?? false;
       dmCtx.recentJournal = save.journal.map(j => j.text);
 
       setLoadingPhase("dm");

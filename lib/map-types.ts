@@ -168,6 +168,8 @@ export type InvestigatorLine = {
   events: InvestigatorLineEvent[];               // 个人线事件（按天/条件触发，KP 演出）
   occupation?: string;                           // fork: 车卡要求的职业（秘密团固定职业，如"搞笑艺人"）——导入身份卡时必须采用
   boundCharacterId?: string;                     // 绑定角色卡 id；"__player__" = 玩家本人；空 = 未绑定
+  // Fork 导入阶段: the line's opening scene — where/when the intro plays before the party meets
+  introPlace?: string;                           // 开场地点（HO 车卡/导入剧情里的地点；缺省 = 模组第一幕地点）
 };
 
 // ── Module core pack (fork 九期: sectioned import → review → share; 十二期: export/import) ──
@@ -328,6 +330,11 @@ export type GameSave = {
   agentSecrets?: Record<string, PersonalSecret>; // characterId → 同伴的秘密（KP 可见；用户结局前不可见，幕后页揭晓）
   investigatorLines?: InvestigatorLine[];        // fork: HO 导入剧情/个人线密档（随核心包/世界导入；KP 与本人可见）
   boundLineHo?: Record<string, string>;          // fork: characterId → HO 代号（"__player__"=玩家本人）；绑定后个人线才注入
+  // Fork 导入阶段: intro-phase state — the party does NOT start together. Each bound member
+  // begins at their HO line's opening location; the KP narrates each intro separately
+  // (split scenes, no cross-talk). Module act 1 starts only after the player's intro resolves.
+  introPhase?: boolean;                          // true = 导入剧情阶段（开场），false/undefined = 正式模组流程
+  introDone?: Record<string, boolean>;           // characterId|"__player__" → 各自导入剧情是否演完（全 true → 汇合，开始第一幕）
   revealedDossier?: string[];                    // fork: 密档划账——已公开条目原文（NPC秘密/伏笔/HO事件/真相切片）；注入时标注状态防止KP遗忘或前后矛盾
   lockedLog?: { id: string; who: string; npc?: string; text: string; day: string }[]; // 锁档私聊流（结局揭晓；八期B 填充）
   // ── fork 九期B: staged acts ──
