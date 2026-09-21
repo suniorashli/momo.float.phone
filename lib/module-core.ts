@@ -304,7 +304,6 @@ export async function extractInvestigatorLines(
       } else if (introBlock || relations.length || events.length) {
         all.push({ ho, introStory: introBlock, relations, events, ...(occupationBlock ? { occupation: occupationBlock } : {}), ...(introPlaceBlock ? { introPlace: introPlaceBlock } : {}) });
       }
-      }
     }
   }
   return all;
