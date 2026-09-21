@@ -421,7 +421,15 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     setHoAssignLoading(false);
   };
   const hoAssignConfirm = () => {
-    persistSave({ ...save, boundLineHo: hoAssignMap });
+    // Fork fix: write the binding back into each line's boundCharacterId — the KP context
+    // (investigatorLinesHint) reads THIS field, not the boundLineHo map; leaving it empty
+    // made every line show as （未绑定）so the KP narrated whichever line it pleased (HO1)
+    const boundLines = (save.investigatorLines || []).map(l => ({ ...l, boundCharacterId: undefined }));
+    for (const [cid, ho] of Object.entries(hoAssignMap)) {
+      const line = boundLines.find(l => l.ho === ho);
+      if (line) line.boundCharacterId = cid;
+    }
+    persistSave({ ...save, boundLineHo: hoAssignMap, investigatorLines: boundLines });
     setHoAssignOpen(false);
     pushMessages({ id: mkId(), type: "system", text: "🎭 HO 密档线已分配——KP 开始分发身份卡" });
     // Player's own line → locked message right away (companions get theirs via lineHint during play)
@@ -746,8 +754,11 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           investigatorLinesHint: save.investigatorLines.map(l => {
             const holder = l.boundCharacterId === "__player__" ? (userIdentity?.name || "你") : charName(l.boundCharacterId || "");
             const bind = holder ? `（${holder}）` : "（未绑定）";
+            // Fork fix: mark the player's own line — without this the KP narrated whichever
+            // line it liked (usually the first, HO1) instead of the player's picked line
+            const isPlayerLine = l.boundCharacterId === "__player__";
             return [
-              `${l.ho}${bind} 导入剧情：${l.introStory}`,
+              `${l.ho}${bind}${isPlayerLine ? "【这是{{user}}本人的线——开场第一幕必须以这条线的导入剧情为起点】" : ""} 导入剧情：${l.introStory}`,
               ...(l.relations.length ? [`私人关系：${l.relations.map(r => `${r.npc}=${r.relation}`).join("；")}`] : []),
               ...(l.events.length ? [`个人线事件（按触发条件演出，只有${holder || l.ho}在场时才发生；触发时走私聊幕，不当众展开）：${l.events.map(e => `[${e.trigger}] ${e.summary}`).join(" ⟂ ")}`] : []),
             ].join("\n");
@@ -2569,6 +2580,10 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           backdropFilter: "none",
           borderTop: "1px solid var(--c-adv-bar-border)",
           flexShrink: 0,
+          // Fork fix: the bar is an unbounded flexShrink:0 stack (choices + hints + topics +
+          // checks + inputs) — during events it grew past the viewport, got clipped by the
+          // root overflow:hidden and squeezed the stream/fold bar to a slit. Cap it and scroll inside.
+          maxHeight: "48vh", overflowY: "auto", overscrollBehavior: "contain",
         }}>
           {/* Event choices (only during event with choices) */}
           <style>{`

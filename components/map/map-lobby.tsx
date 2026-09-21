@@ -342,9 +342,13 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
     // Fork fix: whole-txt import alone is enough — module text becomes the description
     // Fork fix2: when a module txt IS imported, it takes priority as the primary material;
     // the description box degrades to a "supplementary requirements" note for the KP.
+    // Fork fix3: a reviewed module core alone is ALSO enough — its world name comes from the
+    // pack/module; an empty description box must not silently block creation (button-vs-guard mismatch)
     const effectiveDesc = moduleText.trim()
       ? `${moduleName || "导入模组"}：${moduleText.slice(0, 300)}`
-      : description.trim();
+      : moduleCore
+        ? (description.trim() || `${moduleName || "核心包模组"}·核心包`)
+        : description.trim();
     if (!effectiveDesc || isGenerating) return;
     setIsGenerating(true);
     setError(null);
