@@ -543,14 +543,16 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
     return interactions;
   }, [save, skeleton, nodeMap]);
 
-  // Push scene dialogues to stream
-  const pushSceneToStream = useCallback((scene: EventScene) => {
+  // Push scene dialogues to stream (sceneTag: audience tag for split-scene rounds — only
+  // companions at that node see the narration in their context)
+  const pushSceneToStream = useCallback((scene: EventScene, sceneTag?: string) => {
     const msgs: StreamMessage[] = scene.dialogues.map(d => ({
       id: mkId(),
       type: d.speaker === "narrator" ? "narration" as const : "npc" as const,
       speaker: d.speaker === "narrator" ? undefined : d.speaker,
       text: d.text,
       emotion: d.emotion,
+      ...(sceneTag ? { audience: [sceneTag] } : {}),
     }));
     pushMessages(...msgs);
   }, [pushMessages]);
@@ -949,31 +951,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                 }
               }
             }
-                    // Fork 拆场: companion leaves the party — real position change + visible departure note
-            if (decl.splitTo) {
-              const destNode = allNodes.find(n => n.name === decl.splitTo) || allNodes.find(n => n.name.includes(decl.splitTo!) || decl.splitTo!.includes(n.name));
-              if (destNode && destNode.id !== save.currentNodeId) {
-                save = {
-                  ...save,
-                  agents: save.agents.map(x => x.characterId === cid
-                    ? { ...x, currentNodeId: destNode.id, currentNodeType: destNode.type, discoveredNodes: [...new Set([...x.discoveredNodes, destNode.id])] }
-                    : x),
-                };
-                pushMessages({ id: mkId(), type: "system", text: `🚶 ${decl.speaker} 宣言离队，独自前往「${destNode.name}」——那边发生的事只有TA自己知道` });
-              }
-            }
-            // Fork 拆场: group members by current location (player + agents) for split narration
-          const groupsByLoc = new Map<string, string[]>();
-          groupsByLoc.set(save.currentNodeId, ["{{user}}"]);
-          for (const a of save.agents) {
-            const list = groupsByLoc.get(a.currentNodeId) || [];
-            list.push(charName(a.characterId));
-            groupsByLoc.set(a.currentNodeId, list);
-          }
-          const splitGroups = [...groupsByLoc.entries()].map(([nid, members]) => ({ where: nodeMap.get(nid)?.name || nid, members }));
-
-          // ── Phase 4: DM resolves all declarations ──
-          setLoadingPhase("dm");
+            // Fork: one declCard per companion — say / do / dice in a compact card
             {
               const card: StreamMessage = {
                 id: mkId(),
@@ -1455,8 +1433,6 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       // companions elsewhere can't see it in their context)
       if (continuation.dialogues.length > 0) {
         pushSceneToStream(continuation, splitGroups.length > 1 ? `scene:${myLocationName}` : undefined);
-      if (continuation.dialogues.length > 0) {
-        pushSceneToStream(continuation);
         setActiveEvent(continuation);
         // Include companion declarations in accumulated dialogue for next round context
         const declDialogues = companionDecls.map(d => ({ speaker: d.speaker, text: `${d.speech}（${d.action}）`, emotion: d.emotion }));
