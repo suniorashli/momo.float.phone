@@ -135,6 +135,8 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   // Fork: HO 导入剧情/个人线文本（第四栏 → 提取为 InvestigatorLine 密档）
   const [secHoText, setSecHoText] = useState("");
   const [hoLines, setHoLines] = useState<InvestigatorLine[] | null>(null);
+  // Fork: 分栏锁定——锁住的栏目在重新提取时保留已提取结果（导入核心包后自动全锁，改哪栏解锁哪栏）
+  const [secLocks, setSecLocks] = useState<{ npc: boolean; truth: boolean; act: boolean; ho: boolean }>({ npc: false, truth: false, act: false, ho: false });
   const [extracting, setExtracting] = useState(false);
   const [extractProgress, setExtractProgress] = useState("");
   const [moduleCore, setModuleCore] = useState<ModuleCore | null>(null);
@@ -166,10 +168,13 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
     reader.onload = () => { const t = String(reader.result || ""); setter(t); };
     reader.readAsText(file, "utf-8");
   };
-  /** Extract all three sections → review state (user can edit before assembling). */
+  /** Extract sections → review state. Fork: incremental — locked sections inherit the
+   *  previously extracted results (from an imported core pack or a prior extraction);
+   *  only unlocked sections with txt content get re-extracted. */
   const handleExtract = async () => {
     if (extracting) return;
-    const hasAny = secNpcText.trim() || secTruthText.trim() || secActText.trim();
+    const prev = moduleCore;
+    const hasAny = secNpcText.trim() || secTruthText.trim() || secActText.trim() || secHoText.trim() || prev;
     if (!hasAny) return;
     const apiConfigs = loadApiConfigs();
     const apiConfig = apiConfigs.find(c => c.apiKey) || apiConfigs[0];
@@ -177,20 +182,36 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
     setExtracting(true);
     setError(null);
     try {
-      const core: ModuleCore = { npcs: [], locations: [], truth: "", acts: [], rawImported: { npcText: secNpcText, truthText: secTruthText, actText: secActText } };
-      if (secNpcText.trim()) {
+      const core: ModuleCore = {
+        npcs: [],
+        locations: [],
+        truth: "",
+        acts: [],
+        rawImported: { npcText: secNpcText, truthText: secTruthText, actText: secActText },
+      };
+      // NPC — locked: inherit; unlocked with txt: extract
+      if (secLocks.npc && prev) {
+        core.npcs = prev.npcs;
+      } else if (secNpcText.trim()) {
         core.npcs = await extractNpcsFromText(secNpcText, apiConfig, [], p => setExtractProgress(p.step));
       }
-      if (secTruthText.trim()) {
+      // Truth
+      if (secLocks.truth && prev) {
+        core.truth = prev.truth;
+        if (prev.rawImported?.truthText) core.rawImported!.truthText = prev.rawImported.truthText;
+      } else if (secTruthText.trim()) {
         const t = await extractTruthFromText(secTruthText, apiConfig, p => setExtractProgress(p.step));
         core.truth = t.truth;
         core.rawImported!.truthText = secTruthText;
       }
-      if (secActText.trim()) {
+      // Acts
+      if (secLocks.act && prev) {
+        core.acts = prev.acts;
+      } else if (secActText.trim()) {
         core.acts = await extractActsFromText(secActText, apiConfig, p => setExtractProgress(p.step));
       }
-      // Fork: HO 导入剧情/个人线 → 密档（提取后单独审校）
-      if (secHoText.trim()) {
+      // HO lines — locked: keep current hoLines; unlocked with txt: re-extract; no txt & no lock: keep too
+      if (!secLocks.ho && secHoText.trim()) {
         setHoLines(await extractInvestigatorLines(secHoText, apiConfig, p => setExtractProgress(p.step)));
       }
       if (!core.npcs.length && !core.truth && !core.acts.length) throw new Error("三个栏目都提取失败，请检查 API 配置或重试");
@@ -813,13 +834,13 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                 <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "rgba(200,160,100,0.5)", letterSpacing: "0.08em" }}>分栏导入（大模组友好）</div>
                 <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.25)" }}>提取→审校→组装，失败只重跑单栏</div>
               </div>
-              {/* Three section upload slots */}
+              {/* Four section upload slots with per-section locks (fork: 重新提取时锁住的栏目保留已提取结果) */}
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {([
-                  { label: "NPC / 人物", text: secNpcText, setter: setSecNpcText, hint: "人物介绍、NPC列表" },
-                  { label: "真相 / 背景", text: secTruthText, setter: setSecTruthText, hint: "密档、背景设定、真相" },
-                  { label: "跑团流程", text: secActText, setter: setSecActText, hint: "分幕流程、剧情结构" },
-                  { label: "HO 剧情", text: secHoText, setter: setSecHoText, hint: "各HO的导入剧情与个人线" },
+                  { label: "NPC / 人物", text: secNpcText, setter: setSecNpcText, hint: "人物介绍、NPC列表", lock: "npc" as const, locked: secLocks.npc, count: moduleCore?.npcs.length },
+                  { label: "真相 / 背景", text: secTruthText, setter: setSecTruthText, hint: "密档、背景设定、真相", lock: "truth" as const, locked: secLocks.truth, count: moduleCore?.truth ? undefined : undefined },
+                  { label: "跑团流程", text: secActText, setter: setSecActText, hint: "分幕流程、剧情结构", lock: "act" as const, locked: secLocks.act, count: moduleCore?.acts.length },
+                  { label: "HO 剧情", text: secHoText, setter: setSecHoText, hint: "各HO的导入剧情与个人线", lock: "ho" as const, locked: secLocks.ho, count: hoLines?.length },
                 ] as const).map(sec => (
                   <div key={sec.label} style={{ display: "flex", gap: 6, alignItems: "center" }}>
                     <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.4)", width: 68, flexShrink: 0 }}>{sec.label}</span>
@@ -831,14 +852,26 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                       fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit",
                     }}>
                       {sec.text ? `📄 ${sec.text.length} 字` : `导入${sec.hint}（.txt）`}
-                      <input type="file" accept=".txt,.md,text/plain" hidden onChange={e => handleSectionFile(e.target.files?.[0] ?? null, sec.setter)} />
+                      <input type="file" accept=".txt,.md,text/plain" hidden onChange={e => { handleSectionFile(e.target.files?.[0] ?? null, sec.setter); setSecLocks(prev => ({ ...prev, [sec.lock]: false })); }} />
                     </label>
+                    <button type="button" title={sec.locked ? "锁定中：重新提取时保留此栏已提取结果" : "未锁定：重新提取时会重提此栏"}
+                      onClick={() => setSecLocks(prev => ({ ...prev, [sec.lock]: !prev[sec.lock] }))}
+                      style={{ padding: "7px 9px", borderRadius: 7, border: `1px solid ${sec.locked ? "rgba(120,200,150,0.4)" : "rgba(255,255,255,0.12)"}`, background: sec.locked ? "rgba(120,200,150,0.12)" : "transparent", color: sec.locked ? "rgba(140,220,160,0.9)" : "rgba(255,255,255,0.3)", fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>
+                      {sec.locked ? "🔒" : "🔓"}
+                    </button>
                     {sec.text && (
                       <button type="button" onClick={() => sec.setter("")} style={{ padding: "7px 8px", borderRadius: 7, border: "1px solid rgba(255,100,80,0.2)", background: "transparent", color: "rgba(255,100,80,0.6)", fontSize: "calc(10px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit" }}>✕</button>
                     )}
                   </div>
                 ))}
               </div>
+              {(secLocks.npc || secLocks.truth || secLocks.act || secLocks.ho) && (
+                <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(140,220,160,0.55)", marginTop: 8, lineHeight: 1.5 }}>
+                  🔒 {[
+                    secLocks.npc && "NPC", secLocks.truth && "真相", secLocks.act && "流程", secLocks.ho && "HO",
+                  ].filter(Boolean).join("、")} 栏已锁定——点「提取模组核心」只重提未锁定且已导入txt的栏目，锁定栏目保留现有结果
+                </div>
+              )}
               {/* Extract button + progress */}
               <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
                 <button type="button" className="tome-seal" onClick={handleExtract} disabled={extracting}
@@ -944,6 +977,9 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                         if (!Array.isArray(core.npcs) || !Array.isArray(core.acts)) throw new Error("格式不符");
                         setModuleCore(core);
                         setHoLines(Array.isArray(core.investigatorLines) && core.investigatorLines.length ? core.investigatorLines : null);
+                        // Fork: imported pack = ready-made results → lock all sections so a
+                        // later "提取" pass only re-runs what the user explicitly unlocks
+                        setSecLocks({ npc: true, truth: true, act: true, ho: Array.isArray(core.investigatorLines) && core.investigatorLines.length > 0 });
                         // Fork: carried stage assets become staged Files (rewritten to IDB on world create)
                         if (Array.isArray(core.stageAssets) && core.stageAssets.length) {
                           const staged = await Promise.all(core.stageAssets.map(async sa => {
