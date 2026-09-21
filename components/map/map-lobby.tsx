@@ -1019,17 +1019,35 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                     <input type="file" multiple hidden accept="image/*,audio/*" onChange={e => { handleCoreAssetFiles(e.target.files); e.currentTarget.value = ""; }} />
                   </label>
                   {coreAssets.length > 0 && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 6, maxHeight: 110, overflowY: "auto" }}>
-                      {coreAssets.map(({ asset }, i) => (
-                        <div key={asset.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 7px", borderRadius: 6, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(200,160,100,0.08)" }}>
-                          <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))" }}>{asset.kind === "portrait" ? "🖼" : asset.kind === "cg" ? "🎬" : "🎵"}</span>
-                          <span style={{ flex: 1, minWidth: 0, fontSize: "calc(10px*var(--app-text-scale,1))", color: "#d8cbb8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {asset.name}{asset.boundTo ? ` → ${asset.boundTo}` : ""}
-                          </span>
-                          <button type="button" onClick={() => setCoreAssets(coreAssets.filter((_, j) => j !== i))}
-                            style={{ background: "none", border: "none", color: "rgba(255,100,80,0.5)", cursor: "pointer", fontSize: "calc(11px*var(--app-text-scale,1))", padding: 2 }}>✕</button>
-                        </div>
-                      ))}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 6, maxHeight: 200, overflowY: "auto" }}>
+                      {([
+                        { kind: "portrait" as const, icon: "🖼", title: "立绘" },
+                        { kind: "cg" as const, icon: "🎬", title: "CG" },
+                        { kind: "bgm" as const, icon: "🎵", title: "BGM" },
+                      ]).map(({ kind, icon, title }) => {
+                        const list = coreAssets.filter(({ asset }) => asset.kind === kind);
+                        return (
+                          <div key={kind}>
+                            <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(200,160,100,0.55)", fontFamily: "monospace", letterSpacing: "0.08em", marginBottom: 3 }}>
+                              {icon} {title} · {list.length ? `${list.length} 个` : "空"}
+                            </div>
+                            {list.length > 0 && (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                                {list.map(({ asset }) => (
+                                  <div key={asset.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 7px", borderRadius: 6, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(200,160,100,0.08)" }}>
+                                    <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))" }}>{icon}</span>
+                                    <span style={{ flex: 1, minWidth: 0, fontSize: "calc(10px*var(--app-text-scale,1))", color: "#d8cbb8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {asset.name}{asset.boundTo ? ` → ${asset.boundTo}` : ""}
+                                    </span>
+                                    <button type="button" onClick={() => setCoreAssets(coreAssets.filter(({ asset: x }) => x.id !== asset.id))}
+                                      style={{ background: "none", border: "none", color: "rgba(255,100,80,0.5)", cursor: "pointer", fontSize: "calc(11px*var(--app-text-scale,1))", padding: 2 }}>✕</button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                   <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.25)", marginTop: 5, lineHeight: 1.5 }}>

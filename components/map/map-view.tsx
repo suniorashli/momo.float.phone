@@ -4849,36 +4849,61 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                 const files = Array.from(e.target.files || []);
                 if (!files.length) return;
                 const npcNames = [...skeleton.npcs.map(n => n.name), ...skeleton.richRegions.flatMap(r => r.l2_nodes.map(n => n.npc?.name).filter(Boolean) as string[])];
-                const { assets: next, skipped } = await registerAssetFiles(world.id, files, npcNames, assets);
-                updateAssets(next);
-                if (skipped.length) pushMessages({ id: mkId(), type: "system", text: `⚠ 已跳过不支持的文件：${skipped.join("、")}` });
-                else pushMessages({ id: mkId(), type: "system", text: `🎞 已登记 ${files.length - skipped.length} 个演出资源` });
+                try {
+                  const { assets: next, skipped } = await registerAssetFiles(world.id, files, npcNames, assets);
+                  updateAssets(next);
+                  const added = next.length - assets.length;
+                  if (skipped.length) pushMessages({ id: mkId(), type: "system", text: `⚠ 已登记 ${added} 个；跳过 ${skipped.length} 个（写入失败或格式不支持）：${skipped.join("、")}` });
+                  else if (added === 0) pushMessages({ id: mkId(), type: "system", text: "没有新资源被登记（文件重复或格式不支持，仅支持图片/音频）" });
+                  else pushMessages({ id: mkId(), type: "system", text: `🎞 已登记 ${added} 个演出资源——现共：立绘${next.filter(a => a.kind === "portrait").length} · CG${next.filter(a => a.kind === "cg").length} · BGM${next.filter(a => a.kind === "bgm").length}` });
+                } catch (err) {
+                  pushMessages({ id: mkId(), type: "system", text: `资源登记失败：${err instanceof Error ? err.message : String(err)}（常见原因：浏览器存储空间不足，请清理后重试）` });
+                }
               }} />
             </label>
-            {/* Asset list */}
+            {/* Asset list — grouped by kind (fork: portraits / CG / BGM sections with counts) */}
             {assets.length === 0 ? (
               <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", textAlign: "center", padding: "16px 0" }}>还没有演出资源</div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                {assets.map(a => (
-                  <div key={a.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "7px 9px", borderRadius: 8, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)" }}>
-                    <span style={{ fontSize: "calc(12px*var(--app-text-scale,1))" }}>{a.kind === "portrait" ? "👤" : a.kind === "cg" ? "🖼" : "🎵"}</span>
-                    <input value={a.name} onChange={e => updateAssets(assets.map(x => x.id === a.id ? { ...x, name: e.target.value } : x))}
-                      style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: "var(--c-adv-text)", fontSize: "calc(11px*var(--app-text-scale,1))", fontFamily: "inherit" }} />
-                    {a.kind === "portrait" && (
-                      <input value={a.boundTo || ""} placeholder="绑定NPC名" onChange={e => updateAssets(assets.map(x => x.id === a.id ? { ...x, boundTo: e.target.value } : x))}
-                        style={{ width: 90, background: "transparent", border: "none", borderBottom: "1px dashed var(--c-adv-input-border)", outline: "none", color: "var(--c-adv-accent-dim)", fontSize: "calc(10px*var(--app-text-scale,1))", fontFamily: "inherit", textAlign: "center" }} />
-                    )}
-                    {(a.kind === "cg" || a.kind === "bgm") && (
-                      <button type="button" onClick={() => fireStageCues({ cg: a.kind === "cg" ? a.name : undefined, bgm: a.kind === "bgm" ? a.name : undefined })}
-                        style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--c-adv-accent-dim)", background: "transparent", color: "var(--c-adv-accent)", fontSize: "calc(9px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
-                        试演
-                      </button>
-                    )}
-                    <button type="button" onClick={() => { deleteAssetBlob(a.id); updateAssets(assets.filter(x => x.id !== a.id)); }}
-                      style={{ background: "none", border: "none", color: "rgba(255,100,80,0.5)", cursor: "pointer", fontSize: "calc(13px*var(--app-text-scale,1))", fontFamily: "inherit", padding: 2 }}>✕</button>
-                  </div>
-                ))}
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {([
+                  { kind: "portrait" as const, icon: "👤", title: "立绘", note: "按NPC名自动绑定；没绑上可点右侧输入框手填" },
+                  { kind: "cg" as const, icon: "🖼", title: "CG", note: "名字带 cg_ 前缀自动归入；KP 在对应场景调用" },
+                  { kind: "bgm" as const, icon: "🎵", title: "BGM", note: "音频自动归入；氛围切换时 KP 点播" },
+                ]).map(({ kind, icon, title, note }) => {
+                  const list = assets.filter(a => a.kind === kind);
+                  return (
+                    <div key={kind}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                        <span style={{ fontSize: "calc(12px*var(--app-text-scale,1))" }}>{icon}</span>
+                        <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", fontFamily: "monospace", letterSpacing: "0.08em" }}>{title}</span>
+                        <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: list.length ? "rgba(140,220,160,0.8)" : "var(--c-adv-text-muted)", fontFamily: "monospace" }}>{list.length ? `${list.length} 个` : "空"}</span>
+                        {kind === "portrait" && <span style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-text-muted)", opacity: 0.7 }}>{note}</span>}
+                      </div>
+                      {list.length > 0 && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {list.map(a => (
+                            <div key={a.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 9px", borderRadius: 8, background: "var(--c-adv-input-bg)", border: "1px solid var(--c-adv-input-border)" }}>
+                              <input value={a.name} onChange={e => updateAssets(assets.map(x => x.id === a.id ? { ...x, name: e.target.value } : x))}
+                                style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: "var(--c-adv-text)", fontSize: "calc(11px*var(--app-text-scale,1))", fontFamily: "inherit" }} />
+                              {kind === "portrait" ? (
+                                <input value={a.boundTo || ""} placeholder="绑定NPC名" onChange={e => updateAssets(assets.map(x => x.id === a.id ? { ...x, boundTo: e.target.value } : x))}
+                                  style={{ width: 90, background: "transparent", border: "none", borderBottom: "1px dashed var(--c-adv-input-border)", outline: "none", color: "var(--c-adv-accent-dim)", fontSize: "calc(10px*var(--app-text-scale,1))", fontFamily: "inherit", textAlign: "center" }} />
+                              ) : (
+                                <button type="button" onClick={() => fireStageCues({ cg: kind === "cg" ? a.name : undefined, bgm: kind === "bgm" ? a.name : undefined })}
+                                  style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--c-adv-accent-dim)", background: "transparent", color: "var(--c-adv-accent)", fontSize: "calc(9px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+                                  试演
+                                </button>
+                              )}
+                              <button type="button" onClick={() => { deleteAssetBlob(a.id); updateAssets(assets.filter(x => x.id !== a.id)); }}
+                                style={{ background: "none", border: "none", color: "rgba(255,100,80,0.5)", cursor: "pointer", fontSize: "calc(13px*var(--app-text-scale,1))", fontFamily: "inherit", padding: 2 }}>✕</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
             <button onClick={() => setShowAssetPanel(false)} style={{
