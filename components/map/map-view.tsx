@@ -556,15 +556,36 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
 
   // Push scene dialogues to stream (sceneTag: audience tag for split-scene rounds — only
   // companions at that node see the narration in their context)
+  // Fork 交织: narration may embed 〔NPC名：台词〕 markers — split them into alternating
+  // narration / npc bubbles so dialogue reads woven into the prose, not dumped after it.
   const pushSceneToStream = useCallback((scene: EventScene, sceneTag?: string) => {
-    const msgs: StreamMessage[] = scene.dialogues.map(d => ({
-      id: mkId(),
-      type: d.speaker === "narrator" ? "narration" as const : "npc" as const,
-      speaker: d.speaker === "narrator" ? undefined : d.speaker,
-      text: d.text,
-      emotion: d.emotion,
-      ...(sceneTag ? { audience: [sceneTag] } : {}),
-    }));
+    const audience = sceneTag ? { audience: [sceneTag] } : {};
+    const normalize = (s: string) => s.replace(/[「」『』\s]/g, "");
+    const msgs: StreamMessage[] = [];
+    for (const d of scene.dialogues) {
+      if (d.speaker !== "narrator") {
+        // Standalone NPC line (no marker home) — check it wasn't already emitted by a marker split
+        const dup = msgs.some(m => m.type === "npc" && m.speaker === d.speaker && normalize(m.text).includes(normalize(d.text)));
+        if (!dup) msgs.push({ id: mkId(), type: "npc" as const, speaker: d.speaker, text: d.text, emotion: d.emotion, ...audience });
+        continue;
+      }
+      // Narrator: split on 〔NPC：台词〕 markers
+      const parts = d.text.split(/〔[^〕]*[：:][^〕]*〕/g);
+      const marks = [...d.text.matchAll(/〔([^〔〕]*?)[：:]([^〔〕]*)〕/g)];
+      if (marks.length === 0) {
+        msgs.push({ id: mkId(), type: "narration" as const, text: d.text, emotion: d.emotion, ...audience });
+        continue;
+      }
+      marks.forEach((m, i) => {
+        const before = (parts[i] || "").trim();
+        if (before) msgs.push({ id: mkId(), type: "narration" as const, text: before, ...audience });
+        const spk = m[1].trim();
+        const line = m[2].trim();
+        if (spk && line) msgs.push({ id: mkId(), type: "npc" as const, speaker: spk, text: line, ...audience });
+      });
+      const after = (parts[parts.length - 1] || "").trim();
+      if (after) msgs.push({ id: mkId(), type: "narration" as const, text: after, ...audience });
+    }
     pushMessages(...msgs);
   }, [pushMessages]);
 

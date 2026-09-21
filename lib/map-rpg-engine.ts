@@ -934,6 +934,12 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 - narration 必须按自然段分段书写。场景变化、人物动作、气氛描写、结果揭示之间要换段。
 - 在 narration 字符串内部使用 \\n\\n 表示空行换段，不要把整段旁白挤成一整块。
 
+【叙述与台词交织·重要】
+- narration 与 npc_lines 不是"先描述后说话"的两段结构——演出必须交织：NPC 的台词嵌在叙述的相应位置
+- 做法：在 narration 的对应位置写 〔NPC名：TA说的话〕（全角方括号+冒号），系统会把这里替换成该NPC的台词气泡；npc_lines 数组里则放同一句台词（speaker与text与标记一致），供其他系统使用
+- 一个narration里可以嵌多个不同NPC的标记；对白前后的叙述段负责描写动作、神态、环境反应——像小说里对话与描写交替的节奏
+- npc_lines 为空时，也可以只在 narration 里嵌台词标记
+
 【叙述过程·强规则】
 - 任何行动或检定的结果揭晓前，narration 必须先用 2-3 段描写过程：调查员如何动手、环境如何反应、气氛如何变化
 - 禁止跳步：不要一句话直接给结果（如「你找到了日记」）。过程在先，结果在后。
@@ -941,7 +947,7 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
-{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动，像是在提醒来客这里并不太平。\\n\\n柜台后的老板抬起头，看了队伍一眼。柜台上摆着一盏油灯和一本翻开的住宿登记簿。","npc_lines":[{"speaker":"老板","text":"「这么晚才来？就剩两间房了。」他打量着来客，手指无意识地敲着登记簿。"}],"situation":"角色们看到的（传给角色AI）","cg":"","bgm":"","choices":[],"hints":[{"label":"翻看住宿登记簿","skillHint":"图书馆使用"},{"label":"观察老板的神色","skillHint":"心理学"},{"label":"留意屋外的动静","skillHint":"聆听"}],"topics":[{"label":"问起最近的怪事","skillHint":"话术"}],"clues":["登记簿上有一个被划掉的名字"],"revealed":["本轮你在叙述/NPC台词/私聊幕中公开的密档条目原文（从[密档]/[调查员密档线]里逐字摘录；没有公开任何密档就留空[]）"],"investigation_done":false,"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品或SAN-5"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
+{"narration":"雨水沿着屋檐滴落，青石板路泛着冷光。\\n\\n酒馆门口的风铃轻轻晃动。〔老板：这么晚才来？就剩两间房了。〕他打量着来客，手指无意识地敲着柜台上那本翻开的住宿登记簿。","npc_lines":[{"speaker":"老板","text":"「这么晚才来？就剩两间房了。」他打量着来客，手指无意识地敲着登记簿。"}],"situation":"角色们看到的（传给角色AI）","cg":"","bgm":"","choices":[],"hints":[{"label":"翻看住宿登记簿","skillHint":"图书馆使用"},{"label":"观察老板的神色","skillHint":"心理学"},{"label":"留意屋外的动静","skillHint":"聆听"}],"topics":[{"label":"问起最近的怪事","skillHint":"话术"}],"clues":["登记簿上有一个被划掉的名字"],"revealed":["本轮你在叙述/NPC台词/私聊幕中公开的密档条目原文（从[密档]/[调查员密档线]里逐字摘录；没有公开任何密档就留空[]）"],"investigation_done":false,"journal":"这轮日志","gained":["获得的物品"],"lost":["使用/失去的物品或SAN-5"],"advance":false,"ending":false,"move_to":"如果移动了则填目的地节点名，否则留空","world_events":["此刻世界各处正在发生的事件，每条包含地点和事件描述，3-5条"]}`;
 
 export type DMSceneResult = {
   narration: string;
@@ -1704,6 +1710,11 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是COC跑团的守秘人（KP）。
 【旁白排版】
 - narration 必须按自然段分段书写。场景变化、人物动作、气氛描写、结果揭示之间要换段。
 - 在 narration 字符串内部使用 \\n\\n 表示空行换段，不要把整段旁白挤成一整块。
+
+【叙述与台词交织·重要】
+- narration 与 npc_lines 不是"先描述后说话"的两段结构——演出必须交织：NPC 的台词嵌在叙述的相应位置
+- 做法：在 narration 的对应位置写 〔NPC名：TA说的话〕（全角方括号+冒号），系统会把这里替换成该NPC的台词气泡；npc_lines 数组里则放同一句台词（speaker与text与标记一致），供其他系统使用
+- 一个narration里可以嵌多个不同NPC的标记；对白前后的叙述段负责描写动作、神态、环境反应——像小说里对话与描写交替的节奏
 
 【叙述过程·强规则】
 - 本轮宣言的裁定必须先有过程：narration 用 2-3 段描写每位调查员如何行动、环境与 NPC 如何反应，最后才揭示各自的结果
