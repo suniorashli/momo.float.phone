@@ -89,7 +89,15 @@ export async function registerAssetFiles(
       fileName: f.name,
     };
     if (asset.kind === "portrait") {
-      const hit = npcNames.find(nm => nm === name || nm.includes(name) || name.includes(nm));
+      // Fork fix: fuzzy bind — strip whitespace/parenthetical suffixes/job titles, then try
+      // exact / substring both ways (extracted NPC names often carry suffixes the filename lacks)
+      const normalize = (s: string) => s.replace(/[（(].*?[)）]/g, "").replace(/[\s·•・]/g, "");
+      const nName = normalize(name);
+      const hit = npcNames.find(nm => {
+        const nNm = normalize(nm);
+        if (!nNm || !nName) return false;
+        return nNm === nName || nNm.includes(nName) || nName.includes(nNm);
+      });
       if (hit) asset.boundTo = hit;
     }
     // Fork fix: one bad file must not sink the whole batch — skip on write failure

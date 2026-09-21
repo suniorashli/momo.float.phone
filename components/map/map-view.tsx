@@ -4887,8 +4887,8 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
                               <input value={a.name} onChange={e => updateAssets(assets.map(x => x.id === a.id ? { ...x, name: e.target.value } : x))}
                                 style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: "var(--c-adv-text)", fontSize: "calc(11px*var(--app-text-scale,1))", fontFamily: "inherit" }} />
                               {kind === "portrait" ? (
-                                <input value={a.boundTo || ""} placeholder="绑定NPC名" onChange={e => updateAssets(assets.map(x => x.id === a.id ? { ...x, boundTo: e.target.value } : x))}
-                                  style={{ width: 90, background: "transparent", border: "none", borderBottom: "1px dashed var(--c-adv-input-border)", outline: "none", color: "var(--c-adv-accent-dim)", fontSize: "calc(10px*var(--app-text-scale,1))", fontFamily: "inherit", textAlign: "center" }} />
+                                <input value={a.boundTo || ""} placeholder={a.boundTo ? "" : "未绑定·点此填NPC名"} onChange={e => updateAssets(assets.map(x => x.id === a.id ? { ...x, boundTo: e.target.value } : x))}
+                                  style={{ width: 110, background: "transparent", border: "none", borderBottom: `1px dashed ${a.boundTo ? "var(--c-adv-input-border)" : "rgba(255,150,120,0.5)"}`, outline: "none", color: a.boundTo ? "var(--c-adv-accent-dim)" : "rgba(255,150,120,0.75)", fontSize: "calc(10px*var(--app-text-scale,1))", fontFamily: "inherit", textAlign: "center" }} />
                               ) : (
                                 <button type="button" onClick={() => fireStageCues({ cg: kind === "cg" ? a.name : undefined, bgm: kind === "bgm" ? a.name : undefined })}
                                   style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--c-adv-accent-dim)", background: "transparent", color: "var(--c-adv-accent)", fontSize: "calc(9px*var(--app-text-scale,1))", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>

@@ -667,14 +667,14 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
             {/* ── Divider ── */}
             <div style={{ height: 1, background: "linear-gradient(90deg, transparent, rgba(200,160,100,0.15), transparent)", margin: "2px 0 14px" }} />
 
-            {/* ── Advanced options (collapsed by default) ── */}
+            {/* ── Advanced options (style & tone — collapsed by default; module import stays always-visible below) ── */}
             <button type="button" onClick={() => setShowAdvanced(!showAdvanced)} style={{
               width: "100%", padding: "9px 0", marginBottom: 14, borderRadius: 8,
               border: "1px dashed rgba(200,160,100,0.25)", background: "transparent",
               color: "rgba(200,160,100,0.55)", fontSize: "calc(11px*var(--app-text-scale,1))",
               cursor: "pointer", fontFamily: "inherit", letterSpacing: "0.05em",
             }}>
-              {showAdvanced ? "▲ 收起高级选项" : `▼ 高级选项（不知道怎么开始再展开，不展开也能直接创建）${moduleText.trim() ? " · 📄 模组已装" : ""}`}
+              {showAdvanced ? "▲ 收起风格与难度" : "▼ 风格与难度（可选，不展开也能直接创建）"}
             </button>
             {showAdvanced && (<>
             {/* ── Tag sections ── */}
@@ -1036,8 +1036,10 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
                                 {list.map(({ asset }) => (
                                   <div key={asset.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 7px", borderRadius: 6, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(200,160,100,0.08)" }}>
                                     <span style={{ fontSize: "calc(10px*var(--app-text-scale,1))" }}>{icon}</span>
-                                    <span style={{ flex: 1, minWidth: 0, fontSize: "calc(10px*var(--app-text-scale,1))", color: "#d8cbb8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                      {asset.name}{asset.boundTo ? ` → ${asset.boundTo}` : ""}
+                                    <span style={{ flex: 1, minWidth: 0, fontSize: "calc(10px*var(--app-text-scale,1))", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {asset.name}{asset.boundTo
+                                        ? <span style={{ color: "rgba(140,220,160,0.8)" }}> → {asset.boundTo}</span>
+                                        : <span style={{ color: "rgba(255,150,120,0.7)" }}> · 未绑定</span>}
                                     </span>
                                     <button type="button" onClick={() => setCoreAssets(coreAssets.filter(({ asset: x }) => x.id !== asset.id))}
                                       style={{ background: "none", border: "none", color: "rgba(255,100,80,0.5)", cursor: "pointer", fontSize: "calc(11px*var(--app-text-scale,1))", padding: 2 }}>✕</button>
