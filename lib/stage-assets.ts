@@ -92,8 +92,13 @@ export async function registerAssetFiles(
       const hit = npcNames.find(nm => nm === name || nm.includes(name) || name.includes(nm));
       if (hit) asset.boundTo = hit;
     }
-    await putAssetBlob(asset.id, f);
-    assets.push(asset);
+    // Fork fix: one bad file must not sink the whole batch — skip on write failure
+    try {
+      await putAssetBlob(asset.id, f);
+      assets.push(asset);
+    } catch {
+      skipped.push(f.name);
+    }
   }
   return { assets, skipped };
 }

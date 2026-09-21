@@ -144,13 +144,21 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   const handleCoreAssetFiles = async (files: FileList | null) => {
     if (!files?.length || !moduleCore) return;
     const npcNames = moduleCore.npcs.map(n => n.name);
-    const { assets } = await registerAssetFiles("corepack", [...files], npcNames, coreAssets.map(x => x.asset));
-    const next: { asset: StageAsset; file: File }[] = [...coreAssets];
-    for (const a of assets.slice(coreAssets.length)) {
-      const f = [...files].find(ff => ff.name.replace(/\.[^.]+$/, "") === a.name || ff.name === a.fileName);
-      if (f) next.push({ asset: a, file: f });
+    try {
+      const { assets, skipped } = await registerAssetFiles("corepack", [...files], npcNames, coreAssets.map(x => x.asset));
+      const next: { asset: StageAsset; file: File }[] = [...coreAssets];
+      for (const a of assets.slice(coreAssets.length)) {
+        const f = [...files].find(ff => ff.name.replace(/\.[^.]+$/, "") === a.name || ff.name === a.fileName);
+        if (f) next.push({ asset: a, file: f });
+      }
+      setCoreAssets(next);
+      // Fork fix: surface partial failures instead of failing silently
+      const added = next.length - coreAssets.length;
+      if (skipped.length) setError(`已添加 ${added} 个文件；跳过 ${skipped.length} 个不支持的文件：${skipped.join("、")}（仅支持图片/音频）`);
+      else if (added === 0) setError("没有新文件被添加——文件名可能重复，或格式不受支持（仅图片/音频）");
+    } catch (e) {
+      setError(`资源添加失败：${e instanceof Error ? e.message : String(e)}（常见原因：浏览器存储空间不足，请清理后重试）`);
     }
-    setCoreAssets(next);
   };
   const handleSectionFile = (file: File | null, setter: (t: string) => void) => {
     if (!file) return;

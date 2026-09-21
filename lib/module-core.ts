@@ -63,7 +63,7 @@ const NPC_EXTRACT_PROMPT = `你是TRPG模组的资料整理员。从给定文本
 [NPC身份]info/quest/merchant/ambient/rival/creature 之一（creature=怪物/异象）
 [NPC位置]TA出现或常驻的地点（文本提到才写，没有就留空）
 
-要求：文本里的每个有名有姓的人物都要提取，包括看起来不重要的；同一个人只提取一次；纯背景提及的历史人物也提取（notes里注明"历史人物"）。`;
+要求：文本里的每个有名有姓的人物都要提取，包括看起来不重要的；同一个人只提取一次；纯背景提及的历史人物也提取（notes里注明"历史人物"）。文本若按"调查员车卡/主要NPC/次要NPC/怪物"等分区组织，每个分区里的所有人物/怪物都要逐一提取，一个都不能漏——宁可多提不可漏提。`;
 
 const TRUTH_EXTRACT_PROMPT = `你是TRPG模组的资料整理员。从给定文本中提取故事的核心真相与背景设定。只输出标签块纯文本，不要JSON。
 
@@ -100,10 +100,37 @@ const HO_LINE_EXTRACT_PROMPT = `你是TRPG模组的资料整理员。文本里�
 
 要求：
 - 忠实于文本，禁止编造；文本没有的HO不要列
+- 每个HO单独一组、完整输出（[HO]→[导入剧情]→[关系]→[事件]），不要把多个HO的内容写进同一组；文本里有几个HO就输出几组
 - 事件摘要要保留原文的关键台词感（如NPC的语气、态度转变点）
 - 区分"导入剧情"（入团前）与"个人线事件"（入团后按条件触发）`;
 
 export type ExtractProgress = { step: string; done: number; total: number };
+
+/** Flatten numbered tagged fields back to a name→value map (NPC名3 → key "NPC名3"). */
+function taggedToFieldMap(text: string): Record<string, string> {
+  const { fields } = parseTagged(text);
+  return fields;
+}
+
+/** Fork fix: split tagged output into blocks at every occurrence of a repeating key
+ *  (each [NPC名] / [HO] line starts a new block). When the LLM ignores numbering and
+ *  reuses the same label, the flat field map overwrites earlier entries — keeping only
+ *  ONE npc/HO. Block-splitting recovers every occurrence. Returns one field-map per block. */
+function taggedBlocksBy(text: string, blockKey: string): Record<string, string>[] {
+  const src = text.replace(/```[a-zA-Z]*\s*/g, "").replace(/```/g, "").trim();
+  const marker = new RegExp("^\\[" + blockKey + "\\d*\\]\\s*(.*)$");
+  const lines = src.split("\n");
+  const starts: number[] = [];
+  lines.forEach((raw, i) => {
+    if (raw.replace(/\s+$/, "").match(marker)) starts.push(i);
+  });
+  if (starts.length <= 1) return [taggedToFieldMap(src)];
+  const blocks: string[][] = [];
+  for (let b = 0; b < starts.length; b++) {
+    blocks.push(lines.slice(starts[b], b + 1 < starts.length ? starts[b + 1] : lines.length));
+  }
+  return blocks.map(bl => taggedToFieldMap(bl.join("\n")));
+}
 
 export async function extractNpcsFromText(
   text: string,
@@ -122,33 +149,26 @@ export async function extractNpcsFromText(
       { role: "user", content: `模组文本（第${i + 1}/${chunks.length}部分）：\n${chunks[i]}` },
     ]);
     if (!result.content) continue;
-    const { sections } = parseTagged(result.content);
-    // Parse numbered NPC blocks
-    const idxSet = [...new Set(Object.keys(sections))] as unknown as string[];
-    void idxSet;
-    const f = taggedToFieldMap(result.content);
-    const nums = [...new Set(Object.keys(f).map(k => k.match(/^NPC名(\d*)$/)?.[1] ?? (k === "NPC名" ? "" : undefined)).filter(v => v !== undefined))];
-    const names = Object.keys(f).filter(k => /^NPC名\d*$/.test(k));
-    for (const nk of names) {
-      const n = nk.replace(/^NPC名/, "");
-      const name = f[nk]; const desc = f[`NPC描写${n}`] || ""; const role = f[`NPC身份${n}`] || "info"; const loc = f[`NPC位置${n}`] || "";
-      if (!name || seen.has(name)) continue;
-      seen.add(name);
-      all.push({
-        name,
-        personality: desc || "（描写缺失）",
-        role: (["info", "quest", "merchant", "ambient", "rival", "creature"].includes(role) ? role : "info") as ModuleCore["npcs"][number]["role"],
-        location: loc || undefined,
-      });
+    // Fork fix: block-split by [NPC名] — recovers every NPC even when the LLM reuses the
+    // same label without numbering (flat map would keep only the last one)
+    const blocks = taggedBlocksBy(result.content, "NPC名");
+    for (const f of blocks) {
+      const names = Object.keys(f).filter(k => /^NPC名\d*$/.test(k));
+      for (const nk of names) {
+        const n = nk.replace(/^NPC名/, "");
+        const name = f[nk]; const desc = f[`NPC描写${n}`] || ""; const role = f[`NPC身份${n}`] || "info"; const loc = f[`NPC位置${n}`] || "";
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        all.push({
+          name,
+          personality: desc || "（描写缺失）",
+          role: (["info", "quest", "merchant", "ambient", "rival", "creature"].includes(role) ? role : "info") as ModuleCore["npcs"][number]["role"],
+          location: loc || undefined,
+        });
+      }
     }
   }
   return all;
-}
-
-/** Flatten numbered tagged fields back to a name→value map (NPC名3 → key "NPC名3"). */
-function taggedToFieldMap(text: string): Record<string, string> {
-  const { fields } = parseTagged(text);
-  return fields;
 }
 
 export async function extractTruthFromText(
@@ -229,37 +249,39 @@ export async function extractInvestigatorLines(
       { role: "user", content: `模组文本（第${i + 1}/${chunks.length}部分）：\n${chunks[i]}` },
     ]);
     if (!result.content) continue;
-    const f = taggedToFieldMap(result.content);
-    // Each HO block: [HO]/[HO1]… keys; suffix "" or digit-string
-    const hoKeys = Object.keys(f).filter(k => /^HO\d*$/.test(k));
-    const suffixes = hoKeys.map(k => k.replace(/^HO/, ""));
-    for (const suf of suffixes) {
-      const ho = f[`HO${suf}`]?.trim();
-      if (!ho) continue;
-      const intro = f[`导入剧情${suf}`] || "";
-      const relations = Object.keys(f)
-        .filter(k => new RegExp(`^关系${suf}$|^关系${suf}\\d+$`).test(k))
-        .map(k => f[k] || "")
-        .filter(Boolean)
-        .map(r => {
-          const m = r.match(/^(.+?)[:：]\s*(.+)$/);
-          return m ? { npc: m[1].trim(), relation: m[2].trim() } : { npc: r.slice(0, 20), relation: r };
-        });
-      const events = Object.keys(f)
-        .filter(k => new RegExp(`^事件${suf}$|^事件${suf}\\d+$`).test(k))
-        .map(k => f[k] || "")
-        .filter(Boolean)
-        .map(e => {
-          const idx = e.indexOf("|");
-          return idx > 0 ? { trigger: e.slice(0, idx).trim(), summary: e.slice(idx + 1).trim() } : { trigger: "", summary: e };
-        });
-      const existing = all.find(l => l.ho === ho);
-      if (existing) {
-        if (!existing.introStory && intro) existing.introStory = intro;
-        existing.relations.push(...relations.filter(r => !existing.relations.some(x => x.npc === r.npc)));
-        existing.events.push(...events);
-      } else if (intro || relations.length || events.length) {
-        all.push({ ho, introStory: intro, relations, events });
+    // Fork fix: block-split by [HO] — each HO's group stays together even when the LLM
+    // reuses the plain [HO] label without numbering (flat map kept only the last HO)
+    const blocks = taggedBlocksBy(result.content, "HO");
+    for (const f of blocks) {
+      const hoKeys = Object.keys(f).filter(k => /^HO\d*$/.test(k));
+      for (const hk of hoKeys) {
+        const ho = (f[hk] || "").trim();
+        if (!ho) continue;
+        const intro = f["导入剧情"] || "";
+        const relations = Object.keys(f)
+          .filter(k => /^关系\d*$/.test(k))
+          .map(k => f[k] || "")
+          .filter(Boolean)
+          .map(r => {
+            const m = r.match(/^(.+?)[:：]\s*(.+)$/);
+            return m ? { npc: m[1].trim(), relation: m[2].trim() } : { npc: r.slice(0, 20), relation: r };
+          });
+        const events = Object.keys(f)
+          .filter(k => /^事件\d*$/.test(k))
+          .map(k => f[k] || "")
+          .filter(Boolean)
+          .map(e => {
+            const idx = e.indexOf("|");
+            return idx > 0 ? { trigger: e.slice(0, idx).trim(), summary: e.slice(idx + 1).trim() } : { trigger: "", summary: e };
+          });
+        const existing = all.find(l => l.ho === ho);
+        if (existing) {
+          if (!existing.introStory && intro) existing.introStory = intro;
+          existing.relations.push(...relations.filter(r => !existing.relations.some(x => x.npc === r.npc)));
+          existing.events.push(...events);
+        } else if (intro || relations.length || events.length) {
+          all.push({ ho, introStory: intro, relations, events });
+        }
       }
     }
   }
