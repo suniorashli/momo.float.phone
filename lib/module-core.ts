@@ -295,10 +295,39 @@ export async function extractInvestigatorLines(
 
 const REGION_TYPES = ["主城", "城镇", "荒野", "废墟", "禁区"];
 
+/** Fork fix: normalize a location name — strip trailing numbering and parenthetical
+ *  suffixes so "旅馆2/旅馆（二层）/旅馆 3" all merge into "旅馆". Modules revisit the
+ *  same places; each mention must NOT become a separate map node. */
+function normalizeLocName(raw: string): string {
+  let s = (raw || "").trim();
+  s = s.replace(/[（(][^）)]*[）)]+$/g, "");          // trailing (…) / （…）
+  s = s.replace(/[\s\-—_·]*(?:\d+|[一二三四五六七八九十]+)[\s]*$/g, "");  // trailing 2 / 二
+  return s.trim();
+}
+
 /** Assemble a full WorldSkeleton from a reviewed ModuleCore. Pure code — deterministic, free, instant. */
 export function assembleSkeletonFromCore(core: ModuleCore, worldName: string): WorldSkeleton {
   // 1. Group locations into regions (~4 nodes per region), tagging L1 by first-of-region or explicit hint
-  const locs = core.locations.length ? core.locations : deriveLocationsFromNpcs(core);
+  // Fork fix: merge same-place variants first (旅馆/旅馆2/旅馆（二层） → 旅馆)
+  const mergeVariants = (list: ModuleCore["locations"]) => {
+    const byKey = new Map<string, ModuleCore["locations"][number]>();
+    for (const l of list) {
+      const key = normalizeLocName(l.name);
+      if (!key) continue;
+      const existing = byKey.get(key);
+      if (!existing) byKey.set(key, { ...l, name: key });
+      else {
+        if (existing.type !== "l1" && l.type === "l1") existing.type = "l1";
+        if (l.regionHint && !existing.regionHint) existing.regionHint = l.regionHint;
+      }
+    }
+    return [...byKey.values()];
+  };
+  const locs = core.locations.length ? mergeVariants(core.locations) : mergeVariants(deriveLocationsFromNpcs(core));
+  // Fork fix: acts' node names must follow the same merge (main-quest stage hints point at nodes by name)
+  const actsNorm = core.acts.map(a => ({ ...a, nodes: a.nodes.map(nd => normalizeLocName(nd)).filter(Boolean) }));
+  const npcNorm = core.npcs.map(n => n.location ? { ...n, location: normalizeLocName(n.location) } : n);
+  core = { ...core, acts: actsNorm, npcs: npcNorm };
   const regions: RichRegion[] = [];
   const GEO = ["plains", "mountainous", "canyon"] as const;
   const perRegion = 4;

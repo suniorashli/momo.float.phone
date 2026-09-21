@@ -365,8 +365,11 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       }
     })();
     return () => { cancelled = true; };
+    // Fork fix: boundLineHo must be a dep — after the assignment modal confirms,
+    // personaPending is still true (unchanged) so the effect would never re-run
+    // and the import pipeline stayed stuck at phase 0 forever
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [save.personaPending]);
+  }, [save.personaPending, save.boundLineHo]);
   // Player persona review modal opens when an unconfirmed persona arrives (state at L68 reads save.myPersona on mount)
   React.useEffect(() => {
     if (save.myPersona && !save.myPersona.confirmed) setPersonaReview(save.myPersona);
