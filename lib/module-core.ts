@@ -259,38 +259,51 @@ export async function extractInvestigatorLines(
     const blocks = taggedBlocksBy(result.content, "HO");
     for (const f of blocks) {
       const hoKeys = Object.keys(f).filter(k => /^HO\d*$/.test(k));
+      let ho = "";
+      let occupation = "";
+      let introPlace = "";
+      // First pass: collect any HO key that actually contains a name (not a number)
       for (const hk of hoKeys) {
-        const ho = (f[hk] || "").trim();
-        if (!ho) continue;
+        const v = (f[hk] || "").trim();
+        if (/^\d+$/.test(v)) continue; // skip numeric placeholders
+        if (v && !/^\s*$/.test(v)) { ho = v; continue; }
+      }
+      // Fallback: if no name was found in HO keys, try to infer from the block's intro
+      if (!ho) {
         const intro = f["导入剧情"] || "";
-        const occupation = (f["职业"] || "").trim() || undefined;
-        const introPlace = (f["开场地点"] || "").trim() || undefined;
-        const relations = Object.keys(f)
-          .filter(k => /^关系\d*$/.test(k))
-          .map(k => f[k] || "")
-          .filter(Boolean)
-          .map(r => {
-            const m = r.match(/^(.+?)[:：]\s*(.+)$/);
-            return m ? { npc: m[1].trim(), relation: m[2].trim() } : { npc: r.slice(0, 20), relation: r };
-          });
-        const events = Object.keys(f)
-          .filter(k => /^事件\d*$/.test(k))
-          .map(k => f[k] || "")
-          .filter(Boolean)
-          .map(e => {
-            const idx = e.indexOf("|");
-            return idx > 0 ? { trigger: e.slice(0, idx).trim(), summary: e.slice(idx + 1).trim() } : { trigger: "", summary: e };
-          });
-        const existing = all.find(l => l.ho === ho);
-        if (existing) {
-          if (!existing.introStory && intro) existing.introStory = intro;
-          if (!existing.occupation && occupation) existing.occupation = occupation;
-          if (!existing.introPlace && introPlace) existing.introPlace = introPlace;
-          existing.relations.push(...relations.filter(r => !existing.relations.some(x => x.npc === r.npc)));
-          existing.events.push(...events);
-        } else if (intro || relations.length || events.length) {
-          all.push({ ho, introStory: intro, relations, events, ...(occupation ? { occupation } : {}), ...(introPlace ? { introPlace } : {}) });
-        }
+        const m = intro.match(/HO[0-9]*\s*[:：]\s*([^\n]+)/);
+        if (m) ho = m[1].trim();
+      }
+      if (!ho) continue;
+      const introBlock = f["导入剧情"] || "";
+      const occupationBlock = occupation.trim() || undefined;
+      const introPlaceBlock = introPlace.trim() || undefined;
+      const relations = Object.keys(f)
+        .filter(k => /^关系\d*$/.test(k))
+        .map(k => f[k] || "")
+        .filter(Boolean)
+        .map(r => {
+          const rm = r.match(/^(.+?)[:：]\s*(.+)$/);
+          return rm ? { npc: rm[1].trim(), relation: rm[2].trim() } : { npc: r.slice(0, 20), relation: r };
+        });
+      const events = Object.keys(f)
+        .filter(k => /^事件\d*$/.test(k))
+        .map(k => f[k] || "")
+        .filter(Boolean)
+        .map(e => {
+          const idx = e.indexOf("|");
+          return idx > 0 ? { trigger: e.slice(0, idx).trim(), summary: e.slice(idx + 1).trim() } : { trigger: "", summary: e };
+        });
+      const existing = all.find(l => l.ho === ho);
+      if (existing) {
+        if (!existing.introStory && introBlock) existing.introStory = introBlock;
+        if (!existing.occupation && occupationBlock) existing.occupation = occupationBlock;
+        if (!existing.introPlace && introPlaceBlock) existing.introPlace = introPlaceBlock;
+        existing.relations.push(...relations.filter(r => !existing.relations.some(x => x.npc === r.npc)));
+        existing.events.push(...events);
+      } else if (introBlock || relations.length || events.length) {
+        all.push({ ho, introStory: introBlock, relations, events, ...(occupationBlock ? { occupation: occupationBlock } : {}), ...(introPlaceBlock ? { introPlace: introPlaceBlock } : {}) });
+      }
       }
     }
   }

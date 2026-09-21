@@ -452,8 +452,11 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       };
     }
     persistSave(scattered);
+    onSaveUpdate(scattered);
     setHoAssignOpen(false);
     pushMessages({ id: mkId(), type: "system", text: "🎭 HO 密档线已分配——KP 开始分发身份卡" });
+    // Fork 导入阶段: visible banner so the user KNOWS introPhase is active (no more silent skip)
+    pushMessages({ id: mkId(), type: "location", text: `🎬 导入剧情阶段 — 你将在「${myNode?.name || placeToNode(myLine?.introPlace)?.name || "?"}」展开自己的故事，同伴各自在别处` });
     // Player's own line → locked message right away (companions get theirs via lineHint during play)
     const myHo = hoAssignMap["__player__"];
     const myLine = save.investigatorLines?.find(l => l.ho === myHo);
@@ -2527,93 +2530,42 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         </>
       )}
 
-      {/* World events collapsible */}
-      {worldEvents.length > 0 && (
-        <div style={{
-          padding: "0 12px", flexShrink: 0,
-          borderBottom: showWorldEvents ? "1px solid var(--c-adv-input-bg)" : "none",
-        }}>
-          <button onClick={() => setShowWorldEvents(!showWorldEvents)} style={{
-            width: "100%", padding: "5px 0",
-            background: "none", border: "none",
-            fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", cursor: "pointer",
-            fontFamily: "monospace", letterSpacing: "0.1em",
-            textAlign: "center",
-          }}>
-            🌍 世界动态 {showWorldEvents ? "▲" : "▼"}
-          </button>
-          {showWorldEvents && (
-            <div style={{ padding: "0 4px 8px", maxHeight: 120, overflowY: "auto" }}>
+      {/* World events / OOC panels — REDESIGNED as overlay layers, not flex items. This frees the
+          stream to claim all remaining viewport height so declarations/cards never get crushed to a slit. */}
+      {(worldEvents.length > 0 || streamMessages.some(m => m.type === "ooc")) && (
+        <div style={{ position: "absolute", left: 8, right: 8, top: 56, zIndex: 20, pointerEvents: "none" }}>
+          {worldEvents.length > 0 && showWorldEvents && (
+            <div style={{ pointerEvents: "auto", background: "var(--c-adv-panel-bg)", borderRadius: 12, border: "1px solid var(--c-adv-input-border)", padding: "8px 10px", marginBottom: 6, maxHeight: 110, overflowY: "auto", boxShadow: "0 2px 10px rgba(0,0,0,0.12)" }}>
+              <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "var(--c-adv-accent-dim)", fontFamily: "monospace", letterSpacing: "0.12em", marginBottom: 4 }}>🌍 世界动态</div>
               {worldEvents.map((evt, i) => (
-                <div key={i} style={{
-                  fontSize: "calc(11px*var(--app-text-scale,1))", color: "var(--c-adv-text-dim)", lineHeight: 1.5,
-                  padding: "3px 0",
-                  borderBottom: i < worldEvents.length - 1 ? "1px solid var(--c-adv-input-bg)" : "none",
-                }}>
-                  {evt}
-                </div>
+                <div key={i} style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "var(--c-adv-text-dim)", lineHeight: 1.5, padding: "2px 0", borderBottom: i < worldEvents.length - 1 ? "1px solid var(--c-adv-input-border)" : "none" }}>{evt}</div>
               ))}
             </div>
           )}
-        </div>
-      )}
-
-      {/* Fork: OOC (皮下) collapsible — story-neutral chatter stays out of the way */}
-      {streamMessages.some(m => m.type === "ooc") && (
-        <div style={{ padding: "0 12px", flexShrink: 0 }}>
-          <button onClick={() => setShowOocPanel(!showOocPanel)} style={{
-            width: "100%", padding: "7px 0", minHeight: 28,
-            background: "none", border: "none",
-            fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(140,200,255,0.55)", cursor: "pointer",
-            fontFamily: "monospace", letterSpacing: "0.1em",
-            textAlign: "center",
-          }}>
-            🎤 皮下吐槽 {showOocPanel ? "▲" : `▼（${streamMessages.filter(m => m.type === "ooc").length} 条）`}
-          </button>
-          {showOocPanel && (
-            <div ref={oocPanelRef} style={{ maxHeight: 150, overflowY: "auto", paddingBottom: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+          {streamMessages.some(m => m.type === "ooc") && showOocPanel && (
+            <div style={{ pointerEvents: "auto", background: "var(--c-adv-panel-bg)", borderRadius: 12, border: "1px solid rgba(140,200,255,0.25)", padding: "8px 10px", maxHeight: 140, overflowY: "auto", boxShadow: "0 2px 10px rgba(0,0,0,0.12)" }}>
+              <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(140,200,255,0.8)", fontFamily: "monospace", letterSpacing: "0.12em", marginBottom: 4 }}>🎤 皮下吐槽（{streamMessages.filter(m => m.type === "ooc").length} 条）</div>
               {streamMessages.filter(m => m.type === "ooc").map(m => {
                 const isUser = m.speaker === "__user__";
                 const avatar = !isUser ? fullAvatarMap[m.speaker || ""] : undefined;
                 return (
-                  <div key={m.id} style={{
-                    display: "flex", gap: 6, alignItems: "flex-start",
-                    flexDirection: isUser ? "row-reverse" : "row",
-                  }}>
-                    <div style={{
-                      width: 20, height: 20, borderRadius: "50%", flexShrink: 0,
-                      backgroundImage: avatar ? `url(${avatar})` : "none",
-                      backgroundColor: avatar ? "transparent" : "rgba(140,200,255,0.12)",
-                      backgroundSize: "cover", backgroundPosition: "center",
-                      border: "1px solid rgba(140,200,255,0.3)",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      fontSize: 10, color: "rgba(170,215,255,0.8)",
-                    }}>{!avatar && (isUser ? "你" : (m.speaker?.[0] || "?"))}</div>
-                    <div style={{
-                      maxWidth: "82%", padding: "5px 9px", borderRadius: 10,
-                      background: isUser ? "rgba(140,200,255,0.14)" : "var(--c-adv-input-bg)",
-                      border: `1px solid ${isUser ? "rgba(140,200,255,0.3)" : "var(--c-adv-input-border)"}`,
-                    }}>
-                      {!isUser && (
-                        <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", fontWeight: 600, color: "rgba(170,215,255,0.9)", marginBottom: 1 }}>{m.speaker}</div>
-                      )}
-                      <div style={{ fontSize: "calc(11px*var(--app-text-scale,1))", lineHeight: 1.55, color: "var(--c-adv-text-dim)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.text}</div>
+                  <div key={m.id} style={{ display: "flex", gap: 6, alignItems: "flex-start", flexDirection: isUser ? "row-reverse" : "row", marginBottom: 4 }}>
+                    <div style={{ width: 18, height: 18, borderRadius: "50%", flexShrink: 0, backgroundImage: avatar ? `url(${avatar})` : "none", backgroundColor: avatar ? "transparent" : "rgba(140,200,255,0.12)", backgroundSize: "cover", backgroundPosition: "center", border: "1px solid rgba(140,200,255,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "rgba(170,215,255,0.8)" }}>{!avatar && (isUser ? "你" : (m.speaker?.[0] || "?"))}</div>
+                    <div style={{ maxWidth: "85%", padding: "4px 8px", borderRadius: 9, background: isUser ? "rgba(140,200,255,0.12)" : "var(--c-adv-input-bg)", border: `1px solid ${isUser ? "rgba(140,200,255,0.25)" : "var(--c-adv-input-border)"}` }}>
+                      {!isUser && <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", fontWeight: 600, color: "rgba(170,215,255,0.9)", marginBottom: 1 }}>{m.speaker}</div>}
+                      <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", lineHeight: 1.5, color: "var(--c-adv-text-dim)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.text}</div>
                     </div>
                   </div>
                 );
               })}
-              {oocReplying && (
-                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(140,200,255,0.5)", textAlign: "center", fontFamily: "monospace", letterSpacing: "0.1em", padding: "2px 0" }}>
-                  …皮下插话中
-                </div>
-              )}
+              {oocReplying && <div style={{ fontSize: "calc(9px*var(--app-text-scale,1))", color: "rgba(140,200,255,0.5)", textAlign: "center", fontFamily: "monospace", letterSpacing: "0.1em", padding: "2px 0" }}>…皮下插话中</div>}
             </div>
           )}
         </div>
       )}
 
-      {/* ═══ Text Stream ═══ (minHeight floor: the bottom bar must never squeeze this to a slit) */}
-      <div style={{ flex: 1, minHeight: 140, position: "relative", overflow: "hidden", background: "transparent", display: "flex", flexDirection: "column", zIndex: 1 }}>
+      {/* ═══ Text Stream ═══ (now claims ALL remaining viewport height — no siblings steal it) */}
+      <div style={{ flex: 1, overflow: "hidden", position: "relative", background: "transparent", display: "flex", flexDirection: "column", zIndex: 1 }}>
         <MapTextStream
           messages={streamMessages.filter(m => m.type !== "ooc")}
           avatarMap={fullAvatarMap}

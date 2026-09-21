@@ -81,14 +81,21 @@ export async function importInvestigator(
     // Skill template must be a real occupation; drop to first mention or detective
     fields["技能模板"] = OCCUPATIONS.find(o => (fields["时代职业"] || "").includes(o.name))?.name || "调查员";
   }
+  // Fork fix: hard override — when an HO occupation is mandated, the LLM's "era-adapted" wording
+  // often drifts (落语→脱口秀演员, 歌舞伎→旅行博主). The HO contract is ironclad: occupation
+  // must match the source text exactly. We keep the LLM's background/keepTraits but lock the job.
+  const hoOcc = hoOccupation?.trim();
+  const lockedOccupation = hoOcc || fields["时代职业"] || fields["技能模板"] || "调查员";
+  const lockedRef = OCCUPATIONS.find(o => lockedOccupation.includes(o.name))?.name || fields["技能模板"] || "调查员";
   return {
     name: fields["名字"] || characterName,
     era: eraGuess,
-    occupation: fields["时代职业"] || fields["技能模板"] || "调查员",
-    refOccupation: fields["技能模板"],
+    occupation: lockedOccupation,
+    refOccupation: lockedRef,
     background: fields["身份背景"] || "",
     keepTraits: fields["性格保持"] || characterPersonality.slice(0, 200),
-    changes: fields["时代调整"] || "",
+    // Fork: suppress the LLM's era-adaptation note when the job is locked — it would contradict
+    changes: hoOcc ? "" : (fields["时代调整"] || ""),
     hooks: fields["背景钩子"] || "",
     cardReaction: fields["拿卡反应"] || "",
   };
