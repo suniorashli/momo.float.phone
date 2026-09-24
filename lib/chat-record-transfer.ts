@@ -1,7 +1,7 @@
 import {
   CHAT_MESSAGE_PUSHED_EVENT,
   loadChatMessages,
-  upsertImportedChatMessage,
+  bulkUpsertImportedMessages,
   type ChatMessage,
   type ChatSession,
 } from "./chat-storage";
@@ -155,20 +155,34 @@ export async function importChatRecordFile(
   }
   const allReplacements = new Map([...mediaReplacements, ...idReplacements]);
   const baseOrder = loadChatMessages(targetSession.id).length;
-  let inserted = 0;
   let skipped = parsed.messages.length - validMessages.length;
-  validMessages.forEach((source, index) => {
+  // 先在内存里一次性完成全部字段的改写（媒体引用、消息 ID、目标会话、
+  // 顺序号），再交给批量接口统一落库。旧的逐条 upsert 路径每条消息都会
+  // 触发全量会话预览重算并对 sessions 表排队一次 clear+bulkPut，几千条
+  // 记录就会冻结主线程、堆积上千个清表事务——那是导入后「数据被清空、
+  // 小手机变成初始状态」的直接来源。
+  const prepared = validMessages.map((source, index) => {
     const replaced = replaceDeep(source, allReplacements) as ChatMessage;
-    const result = upsertImportedChatMessage({
+    return {
       ...replaced,
       id: idReplacements.get(source.id) || source.id,
       sessionId: targetSession.id,
       order: baseOrder + index,
       status: source.status || "sent",
-    });
-    if (result.inserted) inserted += 1;
-    else skipped += 1;
+    };
   });
+  let inserted = 0;
+  try {
+    const result = await bulkUpsertImportedMessages(prepared);
+    inserted = result.insertedCount;
+    skipped += result.skippedCount;
+  } catch (error) {
+    // 落库失败必须如实抛出（批量写入按块提交，重试时已写入的部分会被
+    // 自动去重跳过），绝不能吞掉错误让用户以为导入成功、重启后数据消失。
+    throw new Error(`聊天记录写入本地数据库失败（已写入的部分在重试时会自动跳过）：${
+      error instanceof Error ? error.message : String(error)
+    }`);
+  }
   if (inserted > 0 && typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("chat-messages-updated", { detail: { sessionId: targetSession.id } }));
     window.dispatchEvent(new CustomEvent(CHAT_MESSAGE_PUSHED_EVENT, { detail: { imported: true, sessionId: targetSession.id } }));

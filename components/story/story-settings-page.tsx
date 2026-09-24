@@ -3,13 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeftIcon, PhotoIcon, PlusIcon, TrashIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import { Maximize2, Play, Download, Upload } from "lucide-react";
-import { Avatar } from "@/components/ui/primitives";
 import { TextExpandModal } from "@/components/ui/modal";
 import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
+import { StoryPaginationManager, type StoryBranchCreateInput } from "@/components/story/story-pagination-manager";
 import { downloadFile } from "@/lib/download-utils";
 import type { Character } from "@/lib/character-types";
 import type { PresetConfig } from "@/lib/settings-types";
-import type { StoryCharacterSettings, StoryProseStyleScheme, StoryQuickInputScheme, StorySchemeRepository, StoryTailScheme, StoryUiPrefs } from "@/lib/story-storage";
+import type { StoryCharacterSettings, StoryGroup, StoryProseStyleScheme, StoryQuickInputScheme, StorySchemeRepository, StorySession, StoryTailScheme, StoryUiPrefs } from "@/lib/story-storage";
 import {
   STORY_DEFAULT_STATUS_RENDER,
   STORY_DEFAULT_THEATER_RENDER,
@@ -22,6 +22,10 @@ export { STORY_DEFAULT_STATUS_RENDER, STORY_DEFAULT_THEATER_RENDER };
 type StorySettingsPageProps = {
   characters: Character[];
   activeCharacterId: string;
+  activeGroupId: string;
+  groups: StoryGroup[];
+  ownerSessions: StorySession[];
+  activeSessionId: string;
   userName: string;
   uiPrefs: StoryUiPrefs;
   settings: StoryCharacterSettings;
@@ -32,6 +36,16 @@ type StorySettingsPageProps = {
   contextExcludedTags: string;
   onClose: () => void;
   onCharacterChange: (characterId: string) => void;
+  onGroupSelect: (groupId: string) => void;
+  onGroupCreate: (characterIds: string[], name: string) => void;
+  onGroupRename: (groupId: string, name: string) => void;
+  onGroupDelete: (groupId: string) => void;
+  onSessionSelect: (sessionId: string) => void;
+  onBranchCreate: (input: StoryBranchCreateInput) => void;
+  onBranchDelete: (sessionIds: string[]) => void;
+  onSessionUpdate: (sessionId: string, updates: Partial<StorySession>) => void;
+  onExportSession: (sessionId: string) => void;
+  onExportAll: () => void;
   onUiPrefsChange: (prefs: StoryUiPrefs) => void;
   onSettingsChange: (settings: StoryCharacterSettings) => void;
   /** 编辑公用仓库里的方案定义（新增/删除/改名/改内容都在这里落盘）。 */
@@ -117,6 +131,44 @@ function ProseStyleEditor({
         />
       ) : null}
     </div>
+  );
+}
+
+// 剧情字数输入：编辑期间允许清空、全选重输，不做强制纠正；失焦或回车才落库。
+// 存成 0 或超过 10000 时原样保留用户数字，由生成引擎在提示词里收敛到 50–10000。
+function CharLimitInput({ label, value, onCommit }: { label: string; value: number; onCommit: (value: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setDraft(String(value));
+  }, [value, focused]);
+  const commitDraft = () => {
+    const trimmed = draft.trim();
+    const parsed = trimmed === "" ? NaN : Number(trimmed);
+    if (!Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    onCommit(Math.trunc(parsed));
+    setDraft(String(Math.trunc(parsed)));
+  };
+  const outOfRange = value < 50 || value > 10000;
+  return (
+    <label>
+      <span>{label}</span>
+      <input
+        type="number"
+        min={50}
+        max={10000}
+        inputMode="numeric"
+        value={draft}
+        onFocus={() => setFocused(true)}
+        onBlur={() => { setFocused(false); commitDraft(); }}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+      />
+      <small className="story-char-limit-hint" data-out={outOfRange ? "true" : undefined}>{outOfRange ? `已保存 ${value}，生成时按 50–10000 生效` : "范围 50–10000"}</small>
+    </label>
   );
 }
 
@@ -402,6 +454,11 @@ export function StorySettingsPage(props: StorySettingsPageProps) {
   };
   const [wallpaperOpen, setWallpaperOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const fontFileRef = useRef<HTMLInputElement | null>(null);
+  const [fontUrlDraft, setFontUrlDraft] = useState(props.uiPrefs.customFontUrl || "");
+  useEffect(() => {
+    setFontUrlDraft(props.uiPrefs.customFontUrl || "");
+  }, [props.activeSessionId, props.uiPrefs.customFontUrl]);
   const availablePrompts = useMemo(
     () => (props.boundPreset?.prompts || []).filter((item) => !item.marker && item.content?.trim()),
     [props.boundPreset],
@@ -417,6 +474,45 @@ export function StorySettingsPage(props: StorySettingsPageProps) {
     const reader = new FileReader();
     reader.onload = () => props.onUiPrefsChange({ ...props.uiPrefs, wallpaper: typeof reader.result === "string" ? reader.result : undefined });
     reader.readAsDataURL(file);
+  };
+
+  const readCustomFont = (file?: File) => {
+    if (!file) return;
+    const supported = /\.(?:ttf|otf|woff2?)$/i.test(file.name) || file.type.startsWith("font/") || file.type === "application/font-woff";
+    if (!supported) {
+      window.alert("请选择 TTF、OTF、WOFF 或 WOFF2 字体文件");
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      window.alert("字体文件不能超过 8MB，建议使用精简后的 WOFF2 字体");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+      setFontUrlDraft("");
+      props.onUiPrefsChange({
+        ...props.uiPrefs,
+        customFontDataUrl: reader.result,
+        customFontUrl: undefined,
+        customFontName: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const applyCustomFontUrl = () => {
+    const value = fontUrlDraft.trim();
+    if (value && !/^https?:\/\//i.test(value)) {
+      window.alert("请填写以 http:// 或 https:// 开头的字体直链");
+      return;
+    }
+    props.onUiPrefsChange({
+      ...props.uiPrefs,
+      customFontDataUrl: undefined,
+      customFontUrl: value || undefined,
+      customFontName: value ? "URL 字体" : undefined,
+    });
   };
 
   if (wallpaperOpen) {
@@ -447,16 +543,26 @@ export function StorySettingsPage(props: StorySettingsPageProps) {
         <button type="button" onClick={props.onClose} aria-label="关闭设置"><XMarkIcon width={17} /></button>
       </header>
       <main className="story-settings-scroll">
-        <SettingCard title="选择见面对象" hint="预设与方案启用选择按角色保存；方案内容统一存于公用仓库">
-          <div className="story-meeting-characters">
-            {props.characters.map((character) => (
-              <button key={character.id} type="button" data-active={character.id === props.activeCharacterId ? "true" : undefined} onClick={() => props.onCharacterChange(character.id)}>
-                <Avatar src={character.avatar || undefined} name={character.name} size="lg" />
-                <span>{character.name}</span>
-              </button>
-            ))}
-          </div>
-        </SettingCard>
+        <StoryPaginationManager
+          characters={props.characters}
+          activeCharacterId={props.activeCharacterId}
+          activeGroupId={props.activeGroupId}
+          groups={props.groups}
+          sessions={props.ownerSessions}
+          activeSessionId={props.activeSessionId}
+          userName={props.userName}
+          onCharacterChange={props.onCharacterChange}
+          onGroupSelect={props.onGroupSelect}
+          onGroupCreate={props.onGroupCreate}
+          onGroupRename={props.onGroupRename}
+          onGroupDelete={props.onGroupDelete}
+          onSessionSelect={props.onSessionSelect}
+          onBranchCreate={props.onBranchCreate}
+          onBranchDelete={props.onBranchDelete}
+          onSessionUpdate={props.onSessionUpdate}
+          onExportSession={props.onExportSession}
+          onExportAll={props.onExportAll}
+        />
 
         <SettingCard title="剧情预设设置" hint="建议给剧情 APP 单独制作专属预设，避免影响其他应用">
           <label className="story-settings-field"><span>当前角色专属预设名称</span><input value={normalized.presetName} onChange={(event) => patchSettings({ presetName: event.target.value })} /></label>
@@ -489,8 +595,8 @@ export function StorySettingsPage(props: StorySettingsPageProps) {
 
         <SettingCard title="生成设置" hint="检查预设条目与生成设置是否重复">
           <div className="story-number-grid">
-            <label><span>最少字数</span><input type="number" min={50} max={4000} value={normalized.minChars} onChange={(event) => patchSettings({ minChars: Math.max(50, Math.min(4000, Number(event.target.value) || 50)) })} /></label>
-            <label><span>最多字数</span><input type="number" min={50} max={4000} value={normalized.maxChars} onChange={(event) => patchSettings({ maxChars: Math.max(50, Math.min(4000, Number(event.target.value) || 50)) })} /></label>
+            <CharLimitInput label="最少字数" value={normalized.minChars ?? 800} onCommit={(minChars) => patchSettings({ minChars })} />
+            <CharLimitInput label="最多字数" value={normalized.maxChars ?? 1500} onCommit={(maxChars) => patchSettings({ maxChars })} />
           </div>
           <label className="story-settings-field"><span>用户人称</span><select value={normalized.userPerspective} onChange={(event) => patchSettings({ userPerspective: event.target.value as StoryCharacterSettings["userPerspective"] })}><option value="second">第二人称“你”</option><option value="third">第三人称“TA”</option><option value="username">使用用户名“{props.userName}”</option></select></label>
           <ProseStyleEditor schemes={repo.proseStyleSchemes} activeId={normalized.activeProseStyleSchemeId!} onChange={(proseStyleSchemes, activeProseStyleSchemeId) => { patchRepo({ proseStyleSchemes }); patchSettings({ activeProseStyleSchemeId }); }} />
@@ -498,7 +604,39 @@ export function StorySettingsPage(props: StorySettingsPageProps) {
 
         <SettingCard title="语音与播放">
           <ToggleRow title="开启语音" detail="启动当前角色绑定到剧情 APP 的语音；不会自动阅读" checked={Boolean(props.uiPrefs.voiceEnabled)} onChange={(value) => props.onUiPrefsChange({ ...props.uiPrefs, voiceEnabled: value })} />
+          {props.activeGroupId ? <p className="story-settings-note">多人剧情角色语音不统一，当前可能默认绑定第一个角色的语音。</p> : null}
           <p className="story-settings-note">总播放键按次播放下一句；每句对白末尾的小按钮仍可单独播放。</p>
+        </SettingCard>
+
+        <SettingCard title="自定义字体" hint="只应用于当前剧情会话；可上传字体文件或填写字体直链">
+          <input
+            ref={fontFileRef}
+            hidden
+            type="file"
+            accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2"
+            onChange={(event) => {
+              readCustomFont(event.target.files?.[0]);
+              event.target.value = "";
+            }}
+          />
+          <button className="story-font-upload-button" type="button" onClick={() => fontFileRef.current?.click()}>
+            <span><strong>上传字体文件</strong><small>{props.uiPrefs.customFontDataUrl ? `${props.uiPrefs.customFontName || "已上传字体"} · 已自动应用` : "支持 TTF / OTF / WOFF / WOFF2，最大 8MB"}</small></span>
+            <Upload size={16} />
+          </button>
+          <label className="story-settings-field">
+            <span>字体 URL</span>
+            <input value={fontUrlDraft} onChange={(event) => setFontUrlDraft(event.target.value)} placeholder="https://example.com/font.woff2" />
+          </label>
+          <div className="story-font-actions">
+            <button type="button" className="story-font-apply" onClick={applyCustomFontUrl}>应用字体 URL</button>
+            {(props.uiPrefs.customFontDataUrl || props.uiPrefs.customFontUrl) ? (
+              <button type="button" className="story-font-reset" onClick={() => {
+                setFontUrlDraft("");
+                props.onUiPrefsChange({ ...props.uiPrefs, customFontDataUrl: undefined, customFontUrl: undefined, customFontName: undefined });
+              }}>恢复默认字体</button>
+            ) : null}
+          </div>
+          <p className="story-settings-note">远程字体必须是可直接访问的字体文件，并允许跨域加载；否则浏览器会自动回退到默认剧情字体。</p>
         </SettingCard>
 
         <SettingCard title="自动阅读" hint="开启后可在“续写”旁启动自动滚动，解放双手阅读">

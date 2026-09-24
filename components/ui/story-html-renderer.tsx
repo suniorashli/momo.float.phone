@@ -243,13 +243,14 @@ function MarkdownSegment({
                 if (!parsed.text) return _whole;
                 const id = `${voiceIdPrefix}:${voiceIndex++}`;
                 const token = `STORYVOICEPLACEHOLDER${voicePlaceholders.length}END`;
-                const playing = id === playingVoiceSegmentId;
                 const speakerAttr = parsed.speaker
                     ? ` data-story-voice-speaker="${escapeHtmlAttribute(encodeURIComponent(parsed.speaker))}"`
                     : "";
+                // 播放态不参与 HTML 生成（高亮与按钮状态由下方 DOM effect 切换）：
+                // 朗读逐句切换时不再重跑整条 markdown/regex 管线，万字正文也不会卡死
                 voicePlaceholders.push({
                     token,
-                    html: `<span class="story-voice-segment${playing ? " is-playing" : ""}" data-story-voice-segment="${escapeHtmlAttribute(id)}" data-story-voice-text="${escapeHtmlAttribute(encodeURIComponent(parsed.text))}"${speakerAttr}>「${escapeHtmlAttribute(parsed.text)}」<button type="button" class="story-voice-play" data-story-voice-play="${escapeHtmlAttribute(id)}" aria-label="${playing ? "停止朗读" : "朗读这句对白"}" title="${playing ? "停止" : "播放"}"><span aria-hidden="true">${playing ? "■" : "▶"}</span></button></span>`,
+                    html: `<span class="story-voice-segment" data-story-voice-segment="${escapeHtmlAttribute(id)}" data-story-voice-text="${escapeHtmlAttribute(encodeURIComponent(parsed.text))}"${speakerAttr}>「${escapeHtmlAttribute(parsed.text)}」<button type="button" class="story-voice-play" data-story-voice-play="${escapeHtmlAttribute(id)}" aria-label="朗读这句对白" title="播放"><span aria-hidden="true">▶</span></button></span>`,
                 });
                 return token;
             })
@@ -332,9 +333,39 @@ function MarkdownSegment({
         trimmed = trimmed.replace(/<em>/g, '<em class="story-thought">');
 
         return trimmed;
-    }, [content, scopeClass, voiceIdPrefix, playingVoiceSegmentId]);
+    }, [content, scopeClass, voiceIdPrefix]);
 
-    return <div className={scopeClass} style={{ whiteSpace: "normal" }} dangerouslySetInnerHTML={{ __html: html }} />;
+    // 朗读高亮：直接改 DOM，播放状态变化不再重建整段 innerHTML；
+    // 长正文连续朗读时避免反复重排导致页面卡死
+    const rootRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        const root = rootRef.current;
+        if (!root) return;
+        root.querySelectorAll<HTMLElement>(".story-voice-segment.is-playing").forEach((element) => {
+            element.classList.remove("is-playing");
+            const button = element.querySelector<HTMLElement>(".story-voice-play");
+            if (button) {
+                button.setAttribute("aria-label", "朗读这句对白");
+                button.setAttribute("title", "播放");
+                const label = button.querySelector("span");
+                if (label) label.textContent = "▶";
+            }
+        });
+        if (!playingVoiceSegmentId) return;
+        const selectorId = playingVoiceSegmentId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        const active = root.querySelector<HTMLElement>(`.story-voice-segment[data-story-voice-segment="${selectorId}"]`);
+        if (!active) return;
+        active.classList.add("is-playing");
+        const button = active.querySelector<HTMLElement>(".story-voice-play");
+        if (button) {
+            button.setAttribute("aria-label", "停止朗读");
+            button.setAttribute("title", "停止");
+            const label = button.querySelector("span");
+            if (label) label.textContent = "■";
+        }
+    }, [playingVoiceSegmentId, html]);
+
+    return <div ref={rootRef} className={scopeClass} style={{ whiteSpace: "normal" }} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 // ── Inline action click delegate ──

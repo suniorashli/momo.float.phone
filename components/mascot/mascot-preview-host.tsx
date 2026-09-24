@@ -12,14 +12,24 @@
 import { useEffect, useState } from "react";
 import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
 import {
+  MEETING_INVITE_PREVIEW_EVENT,
   STATUS_BAR_PREVIEW_EVENT,
+  type MeetingInvitePreviewEventDetail,
+  type MeetingInvitePreviewRequest,
   type StatusBarPreviewEventDetail,
   type StatusBarPreviewRequest,
 } from "@/lib/mascot-events";
 
-/** 线上聊天状态栏预览：用 CustomStatusFrame 跑，和聊天里真实渲染走的是同一个组件
- *  与同一套高度桥，所见即所得。示例数据经 window.STATUS_RAW / {{RAW}} 注入。 */
-function StatusBarPreviewDialog({ request, onClose }: { request: StatusBarPreviewRequest; onClose: () => void }) {
+type MascotCardPreview = {
+  kind: "status" | "meeting";
+  title: string;
+  displayName: string;
+  renderHtml: string;
+  previewRaw: string;
+};
+
+/** 状态栏/邀请卡片都用真实的 CustomStatusFrame 沙盒与高度桥预览，所见即所得。 */
+function CardPreviewDialog({ request, onClose }: { request: MascotCardPreview; onClose: () => void }) {
   return (
     <div
       style={{ position: "fixed", inset: 0, zIndex: 4000, background: "rgba(10,10,14,0.55)", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -32,7 +42,7 @@ function StatusBarPreviewDialog({ request, onClose }: { request: StatusBarPrevie
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 12 }}>
           <span style={{ color: "#f2f2f5", fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            状态栏预览 · {request.displayName}
+            {request.title} · {request.displayName}
           </span>
           <button
             type="button"
@@ -43,7 +53,7 @@ function StatusBarPreviewDialog({ request, onClose }: { request: StatusBarPrevie
           </button>
         </div>
         <div style={{ borderRadius: 12, overflow: "hidden", background: "rgba(255,255,255,0.06)", padding: 8 }}>
-          <CustomStatusFrame html={request.renderHtml} raw={request.previewRaw} />
+          <CustomStatusFrame html={request.renderHtml} raw={request.previewRaw} kind={request.kind} title={request.title} />
         </div>
         <div style={{ color: "rgba(255,255,255,0.45)", fontSize: "calc(10.5px*var(--app-text-scale,1))", textAlign: "center", marginTop: 8 }}>
           用示例数据沙箱渲染，不影响已保存的配置
@@ -54,19 +64,31 @@ function StatusBarPreviewDialog({ request, onClose }: { request: StatusBarPrevie
 }
 
 export function MascotPreviewHost() {
-  const [statusBarPreview, setStatusBarPreview] = useState<StatusBarPreviewRequest | null>(null);
+  const [preview, setPreview] = useState<MascotCardPreview | null>(null);
 
   useEffect(() => {
-    const handler = (event: Event) => {
+    const statusHandler = (event: Event) => {
       const detail = (event as CustomEvent<StatusBarPreviewEventDetail>).detail;
       if (!detail?.request) return;
       detail.handled = true;
-      setStatusBarPreview(detail.request);
+      const request: StatusBarPreviewRequest = detail.request;
+      setPreview({ ...request, kind: "status", title: "状态栏预览" });
     };
-    window.addEventListener(STATUS_BAR_PREVIEW_EVENT, handler);
-    return () => window.removeEventListener(STATUS_BAR_PREVIEW_EVENT, handler);
+    const meetingHandler = (event: Event) => {
+      const detail = (event as CustomEvent<MeetingInvitePreviewEventDetail>).detail;
+      if (!detail?.request) return;
+      detail.handled = true;
+      const request: MeetingInvitePreviewRequest = detail.request;
+      setPreview({ ...request, kind: "meeting", title: "邀请见面卡片预览" });
+    };
+    window.addEventListener(STATUS_BAR_PREVIEW_EVENT, statusHandler);
+    window.addEventListener(MEETING_INVITE_PREVIEW_EVENT, meetingHandler);
+    return () => {
+      window.removeEventListener(STATUS_BAR_PREVIEW_EVENT, statusHandler);
+      window.removeEventListener(MEETING_INVITE_PREVIEW_EVENT, meetingHandler);
+    };
   }, []);
 
-  if (!statusBarPreview) return null;
-  return <StatusBarPreviewDialog request={statusBarPreview} onClose={() => setStatusBarPreview(null)} />;
+  if (!preview) return null;
+  return <CardPreviewDialog request={preview} onClose={() => setPreview(null)} />;
 }

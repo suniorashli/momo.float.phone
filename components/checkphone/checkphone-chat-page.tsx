@@ -45,6 +45,7 @@ import {
 } from "@/lib/checkphone-storage";
 import { splitBilingualText } from "@/lib/bilingual-text";
 import { resolveUserIdentity } from "@/lib/settings-storage";
+import { loadChatSessions } from "@/lib/chat-storage";
 
 type CheckPhoneChatPageProps = {
   character: Character;
@@ -786,10 +787,23 @@ export function CheckPhoneChatPage({
   }
 
   const payload = snapshot?.payload ?? null;
-  const checkPhoneUserDisplayName = useMemo(
-    () => resolveUserIdentity(character.id, "checkphone")?.name?.trim() || "用户",
-    [character.id],
-  );
+  const [characterRemarkRevision, setCharacterRemarkRevision] = useState(0);
+  useEffect(() => {
+    const handleRemarkUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+      if (!detail?.sessionId) return;
+      const directSession = loadChatSessions().find(item => item.id === detail.sessionId && !item.isGroup && item.contactId === character.id);
+      if (directSession) setCharacterRemarkRevision(value => value + 1);
+    };
+    window.addEventListener("chat-character-remark-updated", handleRemarkUpdated);
+    return () => window.removeEventListener("chat-character-remark-updated", handleRemarkUpdated);
+  }, [character.id]);
+  const checkPhoneUserDisplayName = useMemo(() => {
+    const characterRemark = loadChatSessions()
+      .find(item => !item.isGroup && item.contactId === character.id)
+      ?.characterRemarkForUser?.trim();
+    return characterRemark || resolveUserIdentity(character.id, "checkphone")?.name?.trim() || "用户";
+  }, [character.id, characterRemarkRevision]);
   const getConversationDisplayName = (item: CheckPhoneChatConversation | null | undefined): string => {
     if (!item) return "";
     return isRealDirectConversation(item) ? checkPhoneUserDisplayName : item.name;

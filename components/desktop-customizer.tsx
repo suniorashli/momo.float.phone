@@ -2,6 +2,7 @@ import { useState, useEffect } from "react"
 import type { ThemeProfile } from "@/lib/theme-types"
 import { IconGlyph } from "@/components/icon-glyph"
 import { X, Palette } from "lucide-react"
+import { ICONS, type IconId } from "@/lib/desktop-config"
 
 type DesktopCustomizerProps = {
   draft: ThemeProfile
@@ -112,6 +113,18 @@ export function DesktopCustomizer({ draft, onDraftChange, onApply, onClose }: De
     onDraftChange(next);
   }
 
+  const handleIconUrlUpdate = (iconId: IconId, value: string) => {
+    const nextSkins = { ...draft.iconSkins };
+    const normalized = value.trim();
+    if (normalized) nextSkins[iconId] = normalized;
+    else delete nextSkins[iconId];
+    const updatedAt = new Date().toISOString();
+    const nextSchemes = draft.iconSchemes.map(scheme => scheme.id === draft.activeIconSchemeId
+      ? { ...scheme, iconSkins: nextSkins, updatedAt }
+      : scheme);
+    onDraftChange({ ...draft, iconSkins: nextSkins, iconSchemes: nextSchemes, updatedAt });
+  }
+
   const iconEffect = draft.cssOverrides["--desktop-icon-effect"] || "glass"
   const widgetEffect = draft.cssOverrides["--desktop-widget-effect"] || "glass"
   const outlineWidth = draft.cssOverrides["--desktop-outline-width"] || "1.5"
@@ -214,6 +227,33 @@ export function DesktopCustomizer({ draft, onDraftChange, onApply, onClose }: De
               <ColorField label="图标底色" colorKey="--c-desktop-icon-box" draft={draft} onChange={handleUpdate} />
               <ColorField label="图标主色" colorKey="--c-desktop-icon" draft={draft} onChange={handleUpdate} />
               <ColorField label="标题字色" colorKey="--c-home-label" draft={draft} onChange={handleUpdate} />
+            </div>
+
+            <div className="space-y-2 bg-gray-50/50 p-4 rounded-2xl shadow-inner border border-gray-100/50">
+              <div className="text-[calc(13px*var(--app-text-scale,1))] font-medium text-gray-800">每个 App 的图标 URL</div>
+              <div className="text-[calc(10px*var(--app-text-scale,1))] text-gray-500">粘贴可直接访问的图片地址；清空后恢复当前图标方案。</div>
+              <div className="space-y-2 pt-1">
+                {(Object.values(ICONS) as Array<(typeof ICONS)[IconId]>).map(icon => {
+                  const iconUrl = draft.iconSkins[icon.id] || "";
+                  return (
+                    <label key={icon.id} className="flex items-center gap-2 rounded-xl bg-white/80 px-2.5 py-2 border border-gray-100">
+                      <span className="w-8 h-8 rounded-lg overflow-hidden bg-gray-100 flex items-center justify-center shrink-0">
+                        {iconUrl && /^(?:https?:|data:|blob:)/i.test(iconUrl)
+                          ? <img src={iconUrl} alt="" className="w-full h-full object-cover" />
+                          : <IconGlyph id={icon.id} className="w-5 h-5" />}
+                      </span>
+                      <span className="w-14 shrink-0 text-[calc(11px*var(--app-text-scale,1))] text-gray-700 truncate">{icon.label}</span>
+                      <input
+                        type="url"
+                        value={/^(?:https?:|data:|blob:)/i.test(iconUrl) ? iconUrl : ""}
+                        onChange={event => handleIconUrlUpdate(icon.id, event.target.value)}
+                        placeholder="https://..."
+                        className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-[calc(10px*var(--app-text-scale,1))] outline-none focus:border-gray-400"
+                      />
+                    </label>
+                  );
+                })}
+              </div>
             </div>
           </div>
         )}

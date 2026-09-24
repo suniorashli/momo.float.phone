@@ -1218,6 +1218,10 @@ function IconSkinPage({
   const dockFileRef = useRef<HTMLInputElement>(null);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [dockThumbUrl, setDockThumbUrl] = useState<string | null>(null);
+  const [iconUrlDrafts, setIconUrlDrafts] = useState<Record<string, string>>(() => {
+    const skins = resolveActiveIconSkins(draft);
+    return Object.fromEntries(Object.entries(skins).filter(([, value]) => typeof value === "string" && /^https?:\/\//i.test(value)));
+  });
   const [uploadTarget, setUploadTarget] = useState<DesktopIconId | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<{ iconId: DesktopIconId; assetId: string } | null>(null);
   const [confirmDeleteDock, setConfirmDeleteDock] = useState(false);
@@ -1279,6 +1283,7 @@ function IconSkinPage({
     try {
       const assetId = await saveThemeAssetFromBlob(file, "icon_skin");
       const next = updateIconSkin(draft, uploadTarget, assetId);
+      setIconUrlDrafts(current => ({ ...current, [uploadTarget]: "" }));
       onDraftChange(next);
       await onApply(next);
       const map = await getThemeAssetMap(
@@ -1300,12 +1305,26 @@ function IconSkinPage({
     if (!confirmDeleteId) return;
     const { iconId, assetId } = confirmDeleteId;
     setConfirmDeleteId(null);
-    await deleteThemeAsset(assetId);
+    if (!/^https?:\/\//i.test(assetId)) await deleteThemeAsset(assetId);
     const next = updateIconSkin(draft, iconId, null);
+    setIconUrlDrafts(current => ({ ...current, [iconId]: "" }));
     onDraftChange(next);
     await onApply(next);
     onNotice("已还原默认图标");
   }, [confirmDeleteId, draft, onDraftChange, onApply, onNotice]);
+
+  const handleApplyIconUrl = useCallback(async (iconId: DesktopIconId) => {
+    const value = (iconUrlDrafts[iconId] || "").trim();
+    if (value && !/^https?:\/\//i.test(value)) {
+      onNotice("图标 URL 必须以 http:// 或 https:// 开头");
+      return;
+    }
+    const next = updateIconSkin(draft, iconId, value || null);
+    onDraftChange(next);
+    await onApply(next);
+    if (value) setThumbs(current => ({ ...current, [value]: value }));
+    onNotice(value ? "已应用图床图标" : "已还原默认图标");
+  }, [draft, iconUrlDrafts, onDraftChange, onApply, onNotice]);
 
   const triggerDockUpload = useCallback(() => {
     dockFileRef.current?.click();
@@ -1347,7 +1366,7 @@ function IconSkinPage({
   const handleResetAll = useCallback(async () => {
     const ids = Object.values(activeSkins).filter(Boolean) as string[];
     if (draft.dockSkinAssetId) ids.push(draft.dockSkinAssetId);
-    await Promise.all(ids.map(id => deleteThemeAsset(id)));
+    await Promise.all(ids.filter(id => !/^https?:\/\//i.test(id)).map(id => deleteThemeAsset(id)));
     const cleared: ThemeProfile = {
       ...draft,
       iconSkins: {},
@@ -1362,6 +1381,7 @@ function IconSkinPage({
     onDraftChange(next);
     await onApply(next);
     setThumbs({});
+    setIconUrlDrafts({});
     setDockThumbUrl(null);
     onNotice("已还原全部图标");
   }, [activeSkins, draft, onDraftChange, onApply, onNotice]);
@@ -1375,8 +1395,8 @@ function IconSkinPage({
           const skinUrl = skinAssetId ? thumbs[skinAssetId] : null;
           const previewUrl = skinUrl ?? item.iconDataUrl ?? null;
           return (
-            <div key={item.id} className="is-cell" onClick={() => triggerUpload(item.id)}>
-              <div className="is-frame" {...(previewUrl ? { "data-skinned": "" } : {})}>
+            <div key={item.id} className="is-cell" style={{ minWidth: 0, alignSelf: "start" }}>
+              <div className="is-frame" onClick={() => triggerUpload(item.id)} {...(previewUrl ? { "data-skinned": "" } : {})}>
                 {previewUrl ? (
                   <img className="is-frame-img" src={previewUrl} alt="" />
                 ) : item.builtinId ? (
@@ -1389,12 +1409,36 @@ function IconSkinPage({
                 )}
               </div>
               <span className="is-label">{item.label}</span>
+              <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 4, marginTop: 5 }}>
+                <input
+                  type="url"
+                  inputMode="url"
+                  value={iconUrlDrafts[item.id] ?? (/^https?:\/\//i.test(skinAssetId || "") ? skinAssetId : "")}
+                  placeholder="图床 URL"
+                  aria-label={`${item.label}图标 URL`}
+                  onChange={(event) => setIconUrlDrafts(current => ({ ...current, [item.id]: event.target.value }))}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void handleApplyIconUrl(item.id);
+                    }
+                  }}
+                  style={{ width: "100%", minWidth: 0, height: 26, padding: "0 6px", border: "1px solid rgba(100,116,139,.18)", borderRadius: 7, background: "rgba(255,255,255,.72)", color: "inherit", fontSize: 9, outline: "none" }}
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleApplyIconUrl(item.id)}
+                  style={{ width: "100%", height: 24, border: 0, borderRadius: 7, background: "rgba(100,116,139,.11)", color: "inherit", fontSize: 9, fontWeight: 600 }}
+                >
+                  应用 URL
+                </button>
+              </div>
             </div>
           );
         })}
       </div>
 
-      <p className="is-empty-hint">点击图标上传自定义图片</p>
+      <p className="is-empty-hint">点击图标可上传图片，也可以在每个图标下粘贴图床直链</p>
 
       <h3 className="appearance-menu-section-title">Dock</h3>
       <div

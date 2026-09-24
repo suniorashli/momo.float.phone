@@ -1,6 +1,6 @@
 import Dexie from "dexie";
 import { formatChatTimestamp } from "./llm-prompt-assembler";
-import { hydrateKvDb, kvGet, kvSet } from "./kv-db";
+import { hydrateKvDb, kvGet, kvSet, registerKvMigration } from "./kv-db";
 
 export type StoryUiPrefs = {
   hideBubble?: boolean;
@@ -11,6 +11,12 @@ export type StoryUiPrefs = {
   voiceEnabled?: boolean;
   /** 当前角色剧情页独立壁纸（data URL 或可访问 URL）。 */
   wallpaper?: string;
+  /** 当前剧情会话上传的字体文件（data URL）。 */
+  customFontDataUrl?: string;
+  /** 当前剧情会话使用的远程字体 URL。 */
+  customFontUrl?: string;
+  /** 上传字体的原始文件名，仅用于设置页展示。 */
+  customFontName?: string;
   /** 是否在剧情输入栏显示自动阅读控制。 */
   autoReadingEnabled?: boolean;
   /** 自动阅读滚动速度，单位为像素/秒。 */
@@ -317,10 +323,47 @@ export type StoryCharacterSettings = {
   floatingPhoneInContext?: boolean;
 };
 
+export type StoryOwnerType = "single" | "group";
+
+/** 多人见面组保存在 KV 中，具体剧情消息仍按 StorySession 分会话存储。 */
+export type StoryGroup = {
+  id: string;
+  name: string;
+  characterIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type StorySession = {
   id: string;
   characterId: string;
   title?: string;
+  /** 旧数据缺省时自动迁移为 single。 */
+  ownerType?: StoryOwnerType;
+  /** single 时为角色 id；group 时为多人组 id。 */
+  ownerId?: string;
+  /** 多人剧情的全部参与角色；第一个角色作为 API/预设绑定的主角色。 */
+  participantIds?: string[];
+  /** 同一见面对象下的剧情分页；main 固定为第一节主线。 */
+  branchId?: string;
+  branchName?: string;
+  branchOrder?: number;
+  createdAt?: string;
+  /** 新分线是否允许读取创建前的最近记忆；开启后由 UI 锁定，避免反复改变语义。 */
+  inheritRecentMemory?: boolean;
+  inheritRecentMemoryLocked?: boolean;
+  /** 独立剧情不读取角色短期、核心和长期记忆。 */
+  independentStory?: boolean;
+  /** 小说目录页展示的自定义标签，保存在该故事的主线会话上。 */
+  catalogTags?: string[];
+  /** 从相册设置的剧情封面/头像（data URL）；通常保存在主线会话。 */
+  storyAvatar?: string;
+  /** 邀请或快捷新建后，首次进入时由角色自动开启剧情。 */
+  autoStartPrompt?: string;
+  autoStartRequestedAt?: string;
+  /** 独立剧情结束后可显式并入角色记忆。 */
+  endedAt?: string;
+  includedInMemoryAt?: string;
   updatedAt: string;
   customCSS?: string;
   foldTags?: string;            // Comma-separated tag names to fold for this session.
@@ -330,6 +373,7 @@ export type StorySession = {
   settings?: StoryCharacterSettings;
   lastMessageId?: string;
   lastMessagePreview?: string;
+  lastMessageAt?: string;
 };
 
 export type StoryMessageRole = "user" | "assistant" | "system";
@@ -367,6 +411,9 @@ class StoryDatabase extends Dexie {
 
 const storyDb = new StoryDatabase();
 
+const STORY_GROUPS_KEY = "ai_phone_story_groups_v1";
+registerKvMigration(STORY_GROUPS_KEY);
+
 let _hydrated = false;
 let _sessionsCache: StorySession[] = [];
 let _messagesCache: StoryMessage[] = [];
@@ -400,7 +447,7 @@ function isPreferredStorySession(candidate: StorySession, current: StorySession)
 
 function normalizeStorySessions(sessions: StorySession[]): { items: StorySession[]; changed: boolean } {
   const normalized: StorySession[] = [];
-  const indexByCharacter = new Map<string, number>();
+  const indexByBranch = new Map<string, number>();
   let changed = false;
 
   for (const session of sessions) {
@@ -410,14 +457,38 @@ function normalizeStorySessions(sessions: StorySession[]): { items: StorySession
       changed = true;
       continue;
     }
-    const item = id === session.id && characterId === session.characterId
-      ? session
-      : { ...session, id, characterId };
-    const existingIndex = indexByCharacter.get(characterId);
+    const ownerType: StoryOwnerType = session.ownerType === "group" ? "group" : "single";
+    const ownerId = session.ownerId?.trim() || characterId;
+    const branchId = session.branchId?.trim() || "main";
+    const branchName = session.branchName?.trim() || (branchId === "main" ? "主线剧情" : session.title?.trim() || "分线剧情");
+    const createdAt = session.createdAt || session.updatedAt || new Date().toISOString();
+    const participantIds = ownerType === "group"
+      ? Array.from(new Set((session.participantIds || [characterId]).map((value) => value.trim()).filter(Boolean)))
+      : [characterId];
+    const branchOrder = branchId === "main" ? 0 : Math.max(1, session.branchOrder ?? 1);
+    const item: StorySession = {
+      ...session,
+      id,
+      characterId,
+      ownerType,
+      ownerId,
+      participantIds,
+      branchId,
+      branchName,
+      branchOrder,
+      createdAt,
+    };
+    if (
+      id !== session.id || characterId !== session.characterId || ownerType !== session.ownerType
+      || ownerId !== session.ownerId || branchId !== session.branchId || branchName !== session.branchName
+      || createdAt !== session.createdAt || branchOrder !== session.branchOrder
+      || participantIds.join("\u0000") !== (session.participantIds || []).join("\u0000")
+    ) changed = true;
+    const branchKey = `${ownerType}:${ownerId}:${branchId}`;
+    const existingIndex = indexByBranch.get(branchKey);
     if (existingIndex === undefined) {
-      indexByCharacter.set(characterId, normalized.length);
+      indexByBranch.set(branchKey, normalized.length);
       normalized.push(item);
-      if (item !== session) changed = true;
       continue;
     }
 
@@ -572,6 +643,8 @@ async function migrateLegacyStorySchemeData(): Promise<void> {
 
 export async function hydrateStoryStorage(): Promise<void> {
   if (_hydrated || typeof window === "undefined") return;
+  // 剧情多人组与“上次停留分页”保存在 KV；先水合，避免首屏把已有组误判为空。
+  try { await hydrateKvDb(); } catch { /* KV 失败不阻塞 IndexedDB 剧情消息 */ }
   const [sessions, messages] = await Promise.all([
     storyDb.sessions.toArray().catch(() => []),
     storyDb.messages.toArray().catch(() => []),
@@ -602,26 +675,162 @@ export function loadStoryMessages(sessionId: string): StoryMessage[] {
     .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
 }
 
-export function createOrGetStorySession(characterId: string): StorySession {
+export type CreateStorySessionOptions = {
+  ownerType?: StoryOwnerType;
+  ownerId?: string;
+  participantIds?: string[];
+  branchId?: string;
+  branchName?: string;
+  branchOrder?: number;
+  inheritRecentMemory?: boolean;
+  independentStory?: boolean;
+  baseSession?: StorySession;
+};
+
+export function getStorySessionOwnerKey(session: Pick<StorySession, "characterId" | "ownerType" | "ownerId">): string {
+  const ownerType: StoryOwnerType = session.ownerType === "group" ? "group" : "single";
+  return `${ownerType}:${session.ownerId || session.characterId}`;
+}
+
+export function loadStorySessionsForOwner(ownerType: StoryOwnerType, ownerId: string): StorySession[] {
+  return loadStorySessions()
+    .filter((session) => getStorySessionOwnerKey(session) === `${ownerType}:${ownerId}`)
+    .sort((a, b) => (a.branchOrder ?? 0) - (b.branchOrder ?? 0) || (a.createdAt || "").localeCompare(b.createdAt || ""));
+}
+
+export function createOrGetStorySession(characterId: string, options: CreateStorySessionOptions = {}): StorySession {
   const normalized = normalizeStorySessions(_sessionsCache);
   if (normalized.changed) {
     _sessionsCache = normalized.items;
     persistStorySessionsSnapshot(normalized.items);
   }
-  const existing = _sessionsCache.find((session) => session.characterId === characterId);
+  const ownerType: StoryOwnerType = options.ownerType === "group" ? "group" : "single";
+  const ownerId = options.ownerId?.trim() || characterId;
+  const branchId = options.branchId?.trim() || "main";
+  const existing = _sessionsCache.find((session) => (
+    getStorySessionOwnerKey(session) === `${ownerType}:${ownerId}`
+    && (session.branchId || "main") === branchId
+  ));
   if (existing) return existing;
 
+  const now = new Date().toISOString();
+  const base = options.baseSession;
+  const ownerSessions = loadStorySessionsForOwner(ownerType, ownerId);
   const session: StorySession = {
     id: generateId("story_sess"),
     characterId,
-    updatedAt: new Date().toISOString(),
-    foldTags: "think,thinking,story_status,story_theater",
-    contextExcludedTags: "think,thinking,story_theater",
-    uiPrefs: {},
+    ownerType,
+    ownerId,
+    participantIds: ownerType === "group"
+      ? Array.from(new Set((options.participantIds || [characterId]).filter(Boolean)))
+      : [characterId],
+    branchId,
+    branchName: options.branchName?.trim() || (branchId === "main" ? "主线剧情" : `分线剧情 ${ownerSessions.length}`),
+    branchOrder: branchId === "main" ? 0 : options.branchOrder ?? Math.max(0, ...ownerSessions.map((item) => item.branchOrder ?? 0)) + 1,
+    inheritRecentMemory: branchId === "main" ? true : Boolean(options.inheritRecentMemory),
+    inheritRecentMemoryLocked: branchId !== "main" && Boolean(options.inheritRecentMemory),
+    independentStory: branchId === "main" ? false : Boolean(options.independentStory),
+    createdAt: now,
+    updatedAt: now,
+    foldTags: base?.foldTags ?? "think,thinking,story_status,story_theater",
+    contextExcludedTags: base?.contextExcludedTags ?? "think,thinking,story_theater",
+    customCSS: base?.customCSS,
+    settings: base?.settings ? { ...base.settings } : undefined,
+    uiPrefs: base?.uiPrefs ? { ...base.uiPrefs } : {},
   };
   _sessionsCache.unshift(session);
   storyDb.sessions.put(session).catch(() => undefined);
   return session;
+}
+
+export function deleteStorySessions(sessionIds: string[], options?: { allowMain?: boolean }): void {
+  const requested = new Set(sessionIds);
+  const deletable = _sessionsCache
+    .filter((session) => requested.has(session.id) && (options?.allowMain || (session.branchId || "main") !== "main"))
+    .map((session) => session.id);
+  if (!deletable.length) return;
+  const ids = new Set(deletable);
+  const messageIds = _messagesCache.filter((message) => ids.has(message.sessionId)).map((message) => message.id);
+  _sessionsCache = _sessionsCache.filter((session) => !ids.has(session.id));
+  _messagesCache = _messagesCache.filter((message) => !ids.has(message.sessionId));
+  storyDb.transaction("rw", storyDb.sessions, storyDb.messages, async () => {
+    await storyDb.sessions.bulkDelete(deletable);
+    if (messageIds.length) await storyDb.messages.bulkDelete(messageIds);
+  }).catch(() => undefined);
+}
+
+function sanitizeStoryGroup(raw: unknown): StoryGroup | null {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, unknown>;
+  const id = typeof item.id === "string" ? item.id.trim() : "";
+  const characterIds = Array.isArray(item.characterIds)
+    ? Array.from(new Set(item.characterIds.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim())))
+    : [];
+  if (!id || characterIds.length < 2) return null;
+  const now = new Date().toISOString();
+  return {
+    id,
+    name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : "多人剧情",
+    characterIds,
+    createdAt: typeof item.createdAt === "string" ? item.createdAt : now,
+    updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : now,
+  };
+}
+
+export function loadStoryGroups(): StoryGroup[] {
+  try {
+    const raw = JSON.parse(kvGet(STORY_GROUPS_KEY) || "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw.map(sanitizeStoryGroup).filter((item): item is StoryGroup => item !== null)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  } catch {
+    return [];
+  }
+}
+
+export function saveStoryGroups(groups: StoryGroup[]): void {
+  kvSet(STORY_GROUPS_KEY, JSON.stringify(groups.map(sanitizeStoryGroup).filter(Boolean)));
+}
+
+export function createStoryGroup(characterIds: string[], name?: string): StoryGroup {
+  const ids = Array.from(new Set(characterIds.filter(Boolean)));
+  if (ids.length < 2) throw new Error("多人剧情至少需要选择两个角色");
+  const now = new Date().toISOString();
+  const group: StoryGroup = {
+    id: generateId("story_group"),
+    name: name?.trim() || "多人剧情",
+    characterIds: ids,
+    createdAt: now,
+    updatedAt: now,
+  };
+  saveStoryGroups([group, ...loadStoryGroups()]);
+  return group;
+}
+
+export function updateStoryGroup(groupId: string, updates: Partial<Pick<StoryGroup, "name" | "characterIds">>): StoryGroup | null {
+  const groups = loadStoryGroups();
+  const index = groups.findIndex((group) => group.id === groupId);
+  if (index < 0) return null;
+  const characterIds = updates.characterIds
+    ? Array.from(new Set(updates.characterIds.filter(Boolean)))
+    : groups[index].characterIds;
+  if (characterIds.length < 2) return null;
+  const next = {
+    ...groups[index],
+    ...updates,
+    name: updates.name?.trim() || groups[index].name,
+    characterIds,
+    updatedAt: new Date().toISOString(),
+  };
+  groups[index] = next;
+  saveStoryGroups(groups);
+  return next;
+}
+
+export function deleteStoryGroup(groupId: string): void {
+  saveStoryGroups(loadStoryGroups().filter((group) => group.id !== groupId));
+  const sessionIds = _sessionsCache.filter((session) => getStorySessionOwnerKey(session) === `group:${groupId}`).map((session) => session.id);
+  deleteStorySessions(sessionIds, { allowMain: true });
 }
 
 export function updateStorySession(sessionId: string, updates: Partial<StorySession>): StorySession | null {
@@ -654,10 +863,26 @@ export function pushStoryMessage(
   updateStorySession(message.sessionId, {
     lastMessageId: message.id,
     lastMessagePreview: preview,
+    lastMessageAt: message.createdAt,
     updatedAt: message.createdAt,
   });
 
   return message;
+}
+
+/** 把指定分页设为剧情 APP 下次打开的目标页，可由聊天邀请等跨 APP 流程调用。 */
+export function saveStoryLaunchTarget(session: StorySession): void {
+  const ownerType: StoryOwnerType = session.ownerType === "group" ? "group" : "single";
+  const ownerId = session.ownerId || session.characterId;
+  const ownerKey = `${ownerType}:${ownerId}`;
+  let pageMap: Record<string, string> = {};
+  try {
+    const parsed = JSON.parse(kvGet("story-active-page-map-v1") || "{}");
+    if (parsed && typeof parsed === "object") pageMap = parsed as Record<string, string>;
+  } catch { /* 损坏的旧值直接重建 */ }
+  kvSet("story-active-page-map-v1", JSON.stringify({ ...pageMap, [ownerKey]: session.id }));
+  kvSet("story-last-active-target-v1", JSON.stringify({ ownerType, ownerId }));
+  kvSet("story-last-active-character-id", session.characterId);
 }
 
 /** Delete a single story message */
@@ -714,9 +939,14 @@ export function loadStoryProjectionEntries(
   characterId: string,
   options?: { afterTimestamp?: string; userName?: string; charName?: string }
 ): StoryProjectionEntry[] {
-  const session = _sessionsCache.find((item) => item.characterId === characterId);
-  if (!session) return [];
-  const messages = loadStoryMessages(session.id);
+  const sessions = _sessionsCache.filter((item) => {
+    const participants = item.participantIds?.length ? item.participantIds : [item.characterId];
+    if (!participants.includes(characterId)) return false;
+    return !item.independentStory || Boolean(item.includedInMemoryAt);
+  });
+  if (!sessions.length) return [];
+  const messages = sessions.flatMap((session) => loadStoryMessages(session.id))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const projections: StoryProjectionEntry[] = [];
 
   for (let i = 0; i < messages.length; i++) {

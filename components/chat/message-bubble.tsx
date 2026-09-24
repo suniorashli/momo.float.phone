@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
 import { findCustomStickerByName, resolveCustomStickerUrl } from "@/lib/custom-sticker-storage";
 import { isMediaStoreRef, loadMediaObjectUrl } from "@/lib/media-cache-storage";
 import { getChatImageFromIndexedDB } from "@/lib/chat-asset-storage";
-import { ChatMessage, createOrGetSession, updateMessageMediaStatus, updateMessageMediaData } from "@/lib/chat-storage";
+import { ChatMessage, createOrGetSession, loadChatAppSettings, resolveMeetingInviteCardConfig, updateMessageMediaStatus, updateMessageMediaData } from "@/lib/chat-storage";
 import { resolveContactCard } from "@/lib/contact-card";
 import { loadCharacters } from "@/lib/character-storage";
 import { CHAT_OPEN_SESSION_EVENT, dispatchOpenAddContact } from "@/lib/chat-notification-events";
@@ -30,6 +30,7 @@ import { payWithWalletBalance } from "@/lib/wallet-storage";
 import { formatShoppingPaymentRequestHistory } from "@/lib/shopping-payment-request";
 import { toCustomAppIconId } from "@/lib/custom-app-types";
 import { ChatPluginSlot } from "@/components/chat/chat-plugin-slot";
+import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
 import { CHAT_PLUGIN_SLOTS_CHANGED_EVENT, getChatPluginRuntime } from "@/lib/chat-plugin-runtime";
 
 interface MessageBubbleProps {
@@ -43,6 +44,7 @@ interface MessageBubbleProps {
     characterId?: string;
     onMusicPlay?: (title: string, artist?: string) => void;
     onActionSelect?: (text: string) => void;
+    onMeetingInviteAction?: (msg: ChatMessage, action: "accept" | "decline") => void;
     displayContent?: string;
     defaultTranslationExpanded?: boolean;
 }
@@ -88,7 +90,7 @@ function PluginKindBubble({ msg, kind }: { msg: ChatMessage; kind: string }) {
  * Renders a message bubble based on its mediaType.
  * Falls back to ReactMarkdown for plain text messages.
  */
-export const MessageBubble = memo(function MessageBubble({ msg, onUpdate, charName, userName, onSystemMessage, groupSize, onShowDetail, characterId, onMusicPlay, onActionSelect, displayContent, defaultTranslationExpanded = false }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ msg, onUpdate, charName, userName, onSystemMessage, groupSize, onShowDetail, characterId, onMusicPlay, onActionSelect, onMeetingInviteAction, displayContent, defaultTranslationExpanded = false }: MessageBubbleProps) {
     switch (msg.mediaType) {
         case "red_packet":
             return <RedPacketBubble msg={msg} charName={charName} userName={userName} groupSize={groupSize} onShowDetail={onShowDetail} />;
@@ -122,6 +124,8 @@ export const MessageBubble = memo(function MessageBubble({ msg, onUpdate, charNa
             return <XiaohongshuShareBubble msg={msg} />;
         case "audio":
             return <VoiceMessageBubble msg={msg} characterId={characterId} onUpdate={onUpdate} defaultTranslationExpanded={defaultTranslationExpanded} />;
+        case "meeting_invite":
+            return <MeetingInviteBubble msg={msg} charName={charName} onAction={onMeetingInviteAction} />;
         default: {
             // 聊天插件自定义消息类型：mediaType = "plugin:<kind>"，由注册插件渲染
             if (msg.mediaType?.startsWith("plugin:")) {
@@ -154,6 +158,7 @@ export const MessageBubble = memo(function MessageBubble({ msg, onUpdate, charNa
         if (prev.msg.mediaData?.imageGenerationPrompt !== next.msg.mediaData?.imageGenerationPrompt) return false;
         if (prev.msg.mediaData?.imageGenerationStatus !== next.msg.mediaData?.imageGenerationStatus) return false;
         if (prev.msg.mediaData?.imageGenerationError !== next.msg.mediaData?.imageGenerationError) return false;
+        if (prev.msg.mediaData?.meetingInviteStatus !== next.msg.mediaData?.meetingInviteStatus) return false;
         if (prev.msg.mediaUrl !== next.msg.mediaUrl) return false;
     }
     if (prev.charName !== next.charName) return false;
@@ -164,6 +169,65 @@ export const MessageBubble = memo(function MessageBubble({ msg, onUpdate, charNa
     if (prev.defaultTranslationExpanded !== next.defaultTranslationExpanded) return false;
     return true;
 });
+
+function MeetingInviteBubble({
+    msg,
+    charName,
+    onAction,
+}: {
+    msg: ChatMessage;
+    charName?: string;
+    onAction?: (msg: ChatMessage, action: "accept" | "decline") => void;
+}) {
+    const status = msg.mediaData?.meetingInviteStatus || "pending";
+    const config = resolveMeetingInviteCardConfig(loadChatAppSettings());
+    const inviter = msg.mediaData?.meetingInviteCharacterName || charName || "他";
+    const title = msg.mediaData?.meetingInviteTitle || `${inviter}想邀请你见面，是否同意？`;
+    const description = msg.mediaData?.meetingInviteDescription || "同意后会自动建立新的剧情分线，并从这次见面开始。";
+    const acceptResponse = msg.mediaData?.meetingInviteAcceptResponse || "已同意，正在进入见面剧情";
+    const declineResponse = msg.mediaData?.meetingInviteDeclineResponse || "已选择不见面";
+    const resolvedLabel = status === "accepted" ? acceptResponse : declineResponse;
+    const storedRaw = msg.mediaData?.meetingInviteRaw?.trim();
+    const raw = [
+        storedRaw || [
+            `邀请人=${inviter}`,
+            `标题=${title}`,
+            `说明=${description}`,
+            `同意反应=${acceptResponse}`,
+            `拒绝反应=${declineResponse}`,
+        ].join("\n"),
+        `状态=${status}`,
+    ].join("\n").replace(/^状态\s*[=：:].*$/gm, "").replace(/\n{2,}/g, "\n").trim() + `\n状态=${status}`;
+    if (config.mode === "custom" && config.renderHtml.trim()) {
+        return (
+            <section className="meeting-invite-custom-card" style={{ width: 250, maxWidth: "72vw" }}>
+                <CustomStatusFrame
+                    html={config.renderHtml}
+                    raw={raw}
+                    kind="meeting"
+                    title="邀请见面卡片"
+                    onAction={(action) => onAction?.(msg, action)}
+                />
+            </section>
+        );
+    }
+    return (
+        <section className="meeting-invite-card" data-status={status}>
+            <style>{`.meeting-invite-card{width:250px;max-width:72vw;padding:16px;border-radius:16px;background:linear-gradient(145deg,#fffaf2,#fff);border:1px solid rgba(160,120,76,.18);box-shadow:0 8px 24px rgba(82,58,34,.10);color:#47382d}.meeting-invite-eyebrow{font-size:11px;letter-spacing:.16em;opacity:.56;margin-bottom:8px}.meeting-invite-title{display:block;font-size:15px;line-height:1.45}.meeting-invite-desc{margin:7px 0 14px;font-size:12px;opacity:.65}.meeting-invite-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.meeting-invite-actions button{border-radius:10px;padding:9px 8px}.meeting-invite-decline{border:1px solid rgba(71,56,45,.16);background:rgba(255,255,255,.72);color:inherit}.meeting-invite-accept{border:0;background:#4b4038;color:#fff}.meeting-invite-result{padding-top:3px;font-size:12px;opacity:.72}`}</style>
+            <div className="meeting-invite-eyebrow">OFFLINE INVITATION</div>
+            <strong className="meeting-invite-title">{title}</strong>
+            <p className="meeting-invite-desc">{description}</p>
+            {status === "pending" ? (
+                <div className="meeting-invite-actions">
+                    <button type="button" className="meeting-invite-decline" onClick={() => onAction?.(msg, "decline")}>不同意（不要见面）</button>
+                    <button type="button" className="meeting-invite-accept" onClick={() => onAction?.(msg, "accept")}>同意</button>
+                </div>
+            ) : (
+                <div className="meeting-invite-result">{resolvedLabel}</div>
+            )}
+        </section>
+    );
+}
 
 // ── Text Bubble (default) ─────────────────────────────
 

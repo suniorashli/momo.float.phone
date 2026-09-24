@@ -5231,6 +5231,91 @@
   color: var(--c-text);
 }
 
+.memory-header-actions {
+  display: flex;
+  align-items: center;
+}
+
+.mem-detail .page-header-content {
+  position: relative;
+}
+
+.mem-detail .page-header-right {
+  position: absolute;
+  right: 14px;
+}
+
+.memory-header-filter-btn {
+  position: relative;
+}
+
+.memory-header-filter-badge {
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--c-icon-active);
+  color: #fff;
+  font-size: calc(9px*var(--app-text-scale,1));
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.memory-timeline-filter-sheet .modal-header {
+  border-bottom: none;
+}
+
+.memory-timeline-filter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.memory-timeline-filter-option {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--c-input);
+  color: var(--c-text-title);
+  font-size: calc(13px*var(--app-text-scale,1));
+  cursor: pointer;
+}
+
+.memory-timeline-filter-option[data-selected] {
+  border-color: color-mix(in srgb, var(--c-icon-active) 35%, transparent);
+  background: color-mix(in srgb, var(--c-icon-active) 10%, var(--c-panel));
+  color: var(--c-icon-active);
+}
+
+.memory-timeline-filter-option-meta {
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  color: inherit;
+  opacity: 0.78;
+  font-variant-numeric: tabular-nums;
+}
+
+.memory-timeline-filter-empty {
+  margin: 18px 0;
+  color: var(--c-text);
+  text-align: center;
+  font-size: calc(12px*var(--app-text-scale,1));
+}
+
 /* ── Memory Timeline ── */
 
 .mem-tl {
@@ -5238,11 +5323,15 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 26px 0 0;
+  padding-top: 6px;
 }
 
 /* Card */
 .mem-tl-card {
+
+  position: relative; /* 修复：卡片内「REPORT」水印绝对定位缺少定位上下文时，
+                          会相对最近的定位祖先 .mem-tl（整份列表）而非各自卡片本身，
+                          导致所有卡片的水印叠在同一位置、遮住顶部的来源标签筛选条 */
   width: 100%;
   min-width: 0;
   cursor: pointer;

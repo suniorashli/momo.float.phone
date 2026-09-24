@@ -5,7 +5,7 @@ import {
     initChatDb,
     dbPutMessage, dbDeleteMessage, dbDeleteMessagesBySession, dbDeleteMessagesByIds,
     dbPutMessages, dbPutSessions, dbPutContacts, dbDeleteSession,
-    dbReplaceContacts, dbReplaceSessions,
+    dbReplaceContacts, dbReplaceSessions, dbBulkPutMessages,
 } from "./chat-db";
 import { resolveUserIdentity } from "./settings-storage";
 import { loadCharacters, saveCharacters } from "./character-storage";
@@ -47,6 +47,12 @@ export type ChatSession = {
     userAvatarOverride?: string;
     /** 用户更换当前会话头像后是否通知角色。未设置时默认开启 */
     notifyCharacterOnUserAvatarChange?: boolean;
+    /** 角色给用户设置的私聊备注；会显示在“查手机”的真实私聊列表中。 */
+    characterRemarkForUser?: string;
+    /** 角色给用户备注的最后更新时间。 */
+    characterRemarkForUserUpdatedAt?: string;
+    /** 用户修改“给TA备注”后是否立即通知角色并触发回应；默认关闭。 */
+    notifyCharacterOnAliasChange?: boolean;
     autoReplied?: boolean; // Whether the initial greeting auto-reply has been triggered
     alias?: string;
     videoBackground?: string;
@@ -91,7 +97,7 @@ export type ChatSession = {
     isSpectator?: boolean; // 围观群：用户不在群内，只能生成/线下
 };
 
-export type ChatMessageStatus = "sending" | "sent" | "read" | "failed";
+export type ChatMessageStatus = "sending" | "sent" | "read" | "failed" | "rejected";
 export type ChatMessageRole = "user" | "assistant" | "system" | "tool";
 
 export type StateValue = { name: string; value: number };
@@ -116,6 +122,7 @@ export type ChatMessage = {
         | "red_packet" | "transfer" | "location"
         | "poke" | "sticker" | "quote" | "dice"
         | "voice_call" | "video_call"
+        | "meeting_invite"
         | "accept_red_packet" | "decline_red_packet" | "accept_transfer" | "decline_transfer"
         | "payment_request" | "accept_payment_request" | "decline_payment_request"
         | "music" | "music_share" | "music_notify" | "music_not_found"
@@ -197,6 +204,9 @@ export type ChatMessage = {
         adminActorName?: string;  // 群管理操作执行人显示名
         adminTargetName?: string; // 群管理操作目标显示名
         adminMuteMinutes?: number;// 禁言时长（分钟）
+        blacklistEvent?: "block" | "unblock"; // 仿真拉黑系统事件类型（私聊：用户拉黑/解除拉黑角色）
+        blacklistCharacterName?: string; // 拉黑事件发生时的角色名（用于事件详情与上下文）
+        blacklistUserName?: string;      // 拉黑事件发生时的用户名（用于事件详情与上下文）
         musicTitle?: string;      // 音乐标题
         musicArtist?: string;     // 音乐歌手
         xiaohongshuAuthor?: string;       // 小红书分享作者
@@ -215,6 +225,18 @@ export type ChatMessage = {
         memoryReason?: string;    // 记忆写入原因
         memoryImportance?: number;// 记忆写入重要性
         memoryRequestStatus?: "pending" | "approved" | "ignored";
+        /** 角色发起的线下见面邀请。 */
+        meetingInviteStatus?: "pending" | "accepted" | "declined";
+        meetingInviteCharacterId?: string;
+        meetingInviteCharacterName?: string;
+        /** 角色本轮输出的邀请卡片原始字段，交给自定义 HTML 灵活渲染。 */
+        meetingInviteRaw?: string;
+        meetingInviteTitle?: string;
+        meetingInviteDescription?: string;
+        meetingInviteAcceptResponse?: string;
+        meetingInviteDeclineResponse?: string;
+        meetingInviteResolvedAt?: string;
+        meetingInviteStorySessionId?: string;
         fileType?: "audio" | "image" | "video" | "file";
         fileName?: string;
         fileDuration?: number;
@@ -245,6 +267,10 @@ export type ChatMessage = {
         appHistoryRole?: ChatMessageRole;
         avatarRecommendationForCharacterId?: string;
         avatarRecommendationStatus?: "pending" | "accepted" | "declined";
+        /** 内部系统事件只在聊天流里显示一条小横条，不展示完整系统指令卡片。 */
+        compactSystemInstruction?: boolean;
+        /** 该内部系统事件需要作为私聊短期事件进入统一记忆时间线。 */
+        shortTermMemoryEvent?: boolean;
     };
     isTyping?: boolean; // temporary flag for UI rendering
     statusPanel?: string; // AI display-only status content from [状态栏] tags
@@ -274,6 +300,46 @@ export type ChatMessage = {
     senderName?: string; // cached display name to avoid repeated lookups
 };
 
+export type MeetingInviteCardConfig = {
+    mode: "native" | "custom";
+    /** 附加到私聊提示词中的邀请输出约定；固定控制标记仍由系统兜底。 */
+    contract: string;
+    /** 沙盒中运行的 HTML/CSS/JS；可用 window.STATUS_RAW / {{RAW}} 读取卡片数据。 */
+    renderHtml: string;
+    previewRaw: string;
+};
+
+export const DEFAULT_MEETING_INVITE_CONTRACT = [
+    "当你确实希望与用户线下见面时，才输出一张邀请卡片；不要机械邀请，不要频繁邀请，每轮最多一次。",
+    "卡片内容必须结合当前语境与人设填写，按下面格式逐行输出：",
+    "邀请人=<你的名字>",
+    "标题=<你给用户的邀请标题>",
+    "说明=<本次见面的具体说明>",
+    "同意反应=<用户同意后你会说的话>",
+    "拒绝反应=<用户拒绝后你会说的话>",
+].join("\n");
+
+export const DEFAULT_MEETING_INVITE_PREVIEW = "邀请人=江来汛\n标题=江来汛给你递来了一张心动邀请函💌\n说明=就在楼下车里，暖气打好了，想抱抱你、亲亲你，顺便带你吃宵夜\n同意反应=算你有良心！赶紧套好外套下楼，副驾驶已经给你留好了，抱不到五分钟谁也别想走！\n拒绝反应=宝宝你耍我呢……小狗真要在车里冻死了，你真忍心看我一个人在这受冻啊？\n状态=pending";
+
+export const DEFAULT_MEETING_INVITE_RENDER = `<style>
+*{box-sizing:border-box}body{margin:0;background:transparent;color:#47382d;font:13px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}.card{padding:16px;border-radius:16px;background:linear-gradient(145deg,#fffaf2,#fff);border:1px solid rgba(160,120,76,.18);box-shadow:0 8px 24px rgba(82,58,34,.10)}.eyebrow{font-size:10px;letter-spacing:.16em;opacity:.56;margin-bottom:8px}.title{display:block;font-size:15px;line-height:1.45}.desc{margin:7px 0 14px;font-size:12px;opacity:.65}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.actions button{border-radius:10px;padding:9px 8px;font:inherit}.decline{border:1px solid rgba(71,56,45,.16);background:rgba(255,255,255,.72);color:inherit}.accept{border:0;background:#4b4038;color:#fff}.result{font-size:12px;opacity:.72}
+</style>
+<section class="card"><div class="eyebrow">OFFLINE INVITATION</div><strong id="title" class="title"></strong><p id="desc" class="desc"></p><div id="actions" class="actions"><button class="decline" data-meeting-action="decline">不同意（不要见面）</button><button class="accept" data-meeting-action="accept">同意</button></div><div id="result" class="result" hidden></div></section>
+<script>
+const data={};for(const line of (window.STATUS_RAW||'').split(/\\n+/)){const i=line.indexOf('=');if(i>0)data[line.slice(0,i).trim()]=line.slice(i+1).trim()}
+document.getElementById('title').textContent=data['标题']||((data['邀请人']||'他')+'想邀请你见面，是否同意？');document.getElementById('desc').textContent=data['说明']||'';const status=data['状态']||'pending';if(status!=='pending'){document.getElementById('actions').hidden=true;const result=document.getElementById('result');result.hidden=false;result.textContent=status==='accepted'?(data['同意反应']||'已同意，正在进入见面剧情'):(data['拒绝反应']||'已选择不见面')}
+</script>`;
+
+export function resolveMeetingInviteCardConfig(settings?: ChatAppSettings): MeetingInviteCardConfig {
+    const raw = settings?.meetingInviteCard;
+    return {
+        mode: raw?.mode === "custom" ? "custom" : "native",
+        contract: typeof raw?.contract === "string" ? raw.contract : DEFAULT_MEETING_INVITE_CONTRACT,
+        renderHtml: typeof raw?.renderHtml === "string" ? raw.renderHtml : DEFAULT_MEETING_INVITE_RENDER,
+        previewRaw: typeof raw?.previewRaw === "string" ? raw.previewRaw : DEFAULT_MEETING_INVITE_PREVIEW,
+    };
+}
+
 export type ChatAppSettings = {
     globalAppBackground?: string; // base64 or URL
     /** 私聊内“我的头像”默认值；单独会话头像优先 */
@@ -282,6 +348,8 @@ export type ChatAppSettings = {
     globalChatBackgroundImage?: string;
     /** 聊天室 CSS 默认值；单独会话 CSS 优先，主页外观 CSS 优先级最低 */
     globalChatCustomCSS?: string;
+    /** 全局私聊的邀请见面卡片输出契约与沙盒渲染。 */
+    meetingInviteCard?: MeetingInviteCardConfig;
     /** 私聊默认传入的最近图片数量；单独会话设置优先 */
     globalVisionImagePromptLimit?: number;
     timeAware?: boolean; // When true, inject timestamps into prompt so AI knows message timing (default: true)
@@ -492,6 +560,24 @@ export function isSystemInstructionMessage(msg: Pick<ChatMessage, "role" | "medi
     return msg.role === "system" && msg.mediaType === "system_instruction";
 }
 
+const HIDDEN_SYSTEM_INSTRUCTION_RE = /<hidden-system>([\s\S]*?)<\/hidden-system>/gi;
+
+/** 系统事件在聊天界面中可见的小横条文案；隐藏标签中的提示词绝不渲染。 */
+export function getSystemInstructionDisplayContent(content: string): string {
+    return content.replace(HIDDEN_SYSTEM_INSTRUCTION_RE, "").replace(/\n{2,}/g, "\n").trim();
+}
+
+/** 取出供角色与短期记忆读取的详细内容；有隐藏标签时不重复带上外层展示文案。 */
+export function getSystemInstructionPromptContent(content: string): string {
+    const hidden: string[] = [];
+    content.replace(HIDDEN_SYSTEM_INSTRUCTION_RE, (_full, body: string) => {
+        const normalized = body.trim();
+        if (normalized) hidden.push(normalized);
+        return "";
+    });
+    return hidden.length > 0 ? hidden.join("\n") : content.trim();
+}
+
 export function getChatMessagePreview(msg: ChatMessage): string {
     if (isReadingDiscussMessage(msg)) return "";
 
@@ -511,7 +597,8 @@ export function getChatMessagePreview(msg: ChatMessage): string {
         return "[记忆写入申请]";
     }
     if (isSystemInstructionMessage(msg)) {
-        const content = msg.content.trim();
+        const content = getSystemInstructionDisplayContent(msg.content);
+        if (msg.mediaData?.compactSystemInstruction) return content;
         return content ? `[系统指令] ${content}` : "[系统指令]";
     }
 
@@ -1340,6 +1427,17 @@ export function pushChatMessage(msg: Omit<ChatMessage, "id" | "createdAt" | "sta
         newMsg = pluginResult.message;
     }
 
+    // 仿真拉黑（私聊）：用户把角色拉黑后，角色发出去的消息会被用户拒收——
+    // 角色消息标记 rejected（界面上显示仿微信红色感叹号 + 拒收提示）；
+    // 用户自己发的消息正常送达，不带任何标记。统一在这里处理，
+    // 聊天页生成、后台兜底回复、follow-up 等所有落库路径全覆盖。
+    if (newMsg.role === "assistant") {
+        const sessionForBlock = _sessionsCache.find(s => s.id === newMsg.sessionId);
+        if (sessionForBlock && !sessionForBlock.isGroup && sessionForBlock.isBlacklisted) {
+            newMsg.status = "rejected";
+        }
+    }
+
     _messagesCache.push(newMsg);
     dbPutMessage(newMsg);
     resolvePendingAvatarRecommendation(newMsg);
@@ -1403,20 +1501,98 @@ export function upsertImportedChatMessage(msg: ChatMessage): { message: ChatMess
     _messagesCache.push(newMsg);
     dbPutMessage(newMsg);
 
-    const preview = getChatMessagePreview(newMsg);
-    const sessions = loadChatSessions();
-    const sessIdx = sessions.findIndex(s => s.id === newMsg.sessionId);
-    if (sessIdx !== -1 && isSessionPreviewCandidate(newMsg)) {
-        const currentLast = getLastVisibleSessionMessage(newMsg.sessionId);
-        if (!currentLast || currentLast.id === newMsg.id) {
-            sessions[sessIdx].lastMessageId = newMsg.id;
-            if (preview) sessions[sessIdx].lastMessagePreview = preview;
-            sessions[sessIdx].updatedAt = newMsg.createdAt;
-            saveChatSessions(sessions);
+    // 只有真正可能成为「最后一条可见消息」时才做全量预览刷新：
+    // loadChatSessions() 会遍历全部会话并对整张消息缓存排序，逐条导入
+    // （云同步拉取等循环调用）时会退化成 O(条数 × 会话数 × 消息数 log 消息数)。
+    if (isSessionPreviewCandidate(newMsg)) {
+        const preview = getChatMessagePreview(newMsg);
+        const sessions = loadChatSessions();
+        const sessIdx = sessions.findIndex(s => s.id === newMsg.sessionId);
+        if (sessIdx !== -1) {
+            const currentLast = getLastVisibleSessionMessage(newMsg.sessionId);
+            if (!currentLast || currentLast.id === newMsg.id) {
+                sessions[sessIdx].lastMessageId = newMsg.id;
+                if (preview) sessions[sessIdx].lastMessagePreview = preview;
+                sessions[sessIdx].updatedAt = newMsg.createdAt;
+                saveChatSessions(sessions);
+            }
         }
     }
 
     return { message: newMsg, inserted: true };
+}
+
+// 批量导入（聊天记录迁移专用）。旧的逐条 upsert 路径每条消息都会触发
+// loadChatSessions() 的全量预览重算（每个会话都对整张消息缓存做一次
+// filter+sort），并且目标会话 updatedAt 变化会让 sessions 表排队一次
+// clear+bulkPut 事务——几千条记录就能把主线程冻结数分钟、堆积上千个清表
+// 事务，中途任何一次失败/杀进程/配额满都可能把会话表写坏（「导入后数据
+// 被清空、小手机回到初始状态」事故的直接来源）。
+// 这里改为：一次性去重、一次分块等待落库（失败上抛）、最后只刷新一次
+// 受影响会话的预览，不再触碰其余会话。
+export async function bulkUpsertImportedMessages(
+    messages: ChatMessage[],
+): Promise<{ insertedCount: number; skippedCount: number }> {
+    if (messages.length === 0) return { insertedCount: 0, skippedCount: 0 };
+
+    const existingIds = new Set(_messagesCache.map(item => item.id));
+    const nextOrderBySession = new Map<string, number>();
+    const inserted: ChatMessage[] = [];
+    let skippedCount = 0;
+
+    for (const source of messages) {
+        if (existingIds.has(source.id)) {
+            skippedCount += 1;
+            continue;
+        }
+        let order = getStableMessageOrder(source);
+        if (order === null) {
+            const sessionId = source.sessionId || "";
+            const next = nextOrderBySession.get(sessionId) ?? getNextMessageOrder(sessionId);
+            nextOrderBySession.set(sessionId, next + 1);
+            order = next;
+        }
+        const newMsg: ChatMessage = {
+            ...source,
+            status: source.status || "sent",
+            createdAt: source.createdAt || new Date().toISOString(),
+            order,
+        };
+        existingIds.add(newMsg.id);
+        inserted.push(newMsg);
+    }
+
+    if (inserted.length === 0) return { insertedCount: 0, skippedCount };
+
+    // concat 而不是 push(...arr)：超大数组（数万条）展开会触发 RangeError。
+    _messagesCache = _messagesCache.concat(inserted);
+    // 可等待、分块、错误上抛的真实落库；失败时调用方能感知并提示用户，
+    // 而不是内存里「导入成功」、重启后数据消失。
+    await dbBulkPutMessages(inserted);
+
+    // 会话预览 / updatedAt 只在全部落库后统一刷新一次。
+    const affectedSessionIds = new Set(inserted.map(msg => msg.sessionId));
+    const sessions = loadChatSessions();
+    let sessionsChanged = false;
+    for (const sessionId of affectedSessionIds) {
+        const sessIdx = sessions.findIndex(s => s.id === sessionId);
+        if (sessIdx === -1) continue;
+        const currentLast = getLastVisibleSessionMessage(sessionId);
+        if (!currentLast) continue;
+        const preview = getChatMessagePreview(currentLast);
+        if (
+            sessions[sessIdx].lastMessageId === currentLast.id
+            && (sessions[sessIdx].lastMessagePreview || "") === preview
+            && sessions[sessIdx].updatedAt === currentLast.createdAt
+        ) continue;
+        sessions[sessIdx].lastMessageId = currentLast.id;
+        if (preview) sessions[sessIdx].lastMessagePreview = preview;
+        sessions[sessIdx].updatedAt = currentLast.createdAt;
+        sessionsChanged = true;
+    }
+    if (sessionsChanged) saveChatSessions(sessions);
+
+    return { insertedCount: inserted.length, skippedCount };
 }
 
 function removeFirstExactResponsePart(rawResponseText: string, content: string): string {

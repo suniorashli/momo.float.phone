@@ -1,11 +1,12 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import {
   BookOpenIcon,
   PaintBrushIcon,
   PaperAirplaneIcon,
+  PlusIcon,
   StopIcon,
   XMarkIcon,
 } from "@heroicons/react/24/solid";
@@ -59,9 +60,15 @@ import {
 } from "@/lib/story-engine";
 import {
   createOrGetStorySession,
+  createStoryGroup,
+  deleteStoryGroup,
+  deleteStorySessions,
+  getStorySessionOwnerKey,
   hydrateStoryStorage,
+  loadStoryGroups,
   loadStoryMessages,
   loadStorySessions,
+  loadStorySessionsForOwner,
   loadStorySchemeRepository,
   pushStoryMessage,
   resolveActiveQuickInputScheme,
@@ -75,16 +82,21 @@ import {
   type StorySchemeRepository,
   type StorySession,
   updateStorySession,
+  updateStoryGroup,
   type StoryCharacterSettings,
+  type StoryGroup,
+  type StoryOwnerType,
 } from "@/lib/story-storage";
 import { createOrGetSession, hydrateChatStorage, loadChatMessages, loadChatSessions, markChatSessionRead, pushChatMessage } from "@/lib/chat-storage";
 import { flattenCompletionResult, generateChatCompletion } from "@/lib/chat-engine";
+import { generateGroupChatCompletion } from "@/lib/group-chat-engine";
 import { parseAIResponse } from "@/lib/rich-message-parser";
 import { SessionCustomCSS } from "@/components/ui/session-custom-css";
 import { STORY_CSS_EXAMPLE } from "@/lib/css-examples";
 import { applyEditOutputRegex } from "@/lib/llm-prompt-assembler";
 import { MacroEngine } from "@/lib/macro-engine";
 import { kvGet, kvSet, registerKvMigration } from "@/lib/kv-db";
+import { downloadFile } from "@/lib/download-utils";
 import {
   playAudioBlobViaMediaElement,
   resolveVoiceConfig,
@@ -105,9 +117,38 @@ const activeStoryGenerationRuns = new Map<string, StoryGenerationRun>();
 const storyVoiceCache = new Map<string, Blob>();
 const STORY_VOICE_CACHE_LIMIT = 24;
 const STORY_ACTIVE_CHARACTER_KEY = "story-last-active-character-id";
+const STORY_ACTIVE_TARGET_KEY = "story-last-active-target-v1";
+const STORY_ACTIVE_PAGE_MAP_KEY = "story-active-page-map-v1";
 const DEFAULT_AUTO_READING_SPEED = 36;
 
 registerKvMigration(STORY_ACTIVE_CHARACTER_KEY);
+registerKvMigration(STORY_ACTIVE_TARGET_KEY);
+registerKvMigration(STORY_ACTIVE_PAGE_MAP_KEY);
+
+type StoryActiveTarget = { ownerType: StoryOwnerType; ownerId: string };
+
+function loadStoryActivePageMap(): Record<string, string> {
+  try {
+    const parsed = JSON.parse(kvGet(STORY_ACTIVE_PAGE_MAP_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStoryActivePage(ownerKey: string, sessionId: string): void {
+  kvSet(STORY_ACTIVE_PAGE_MAP_KEY, JSON.stringify({ ...loadStoryActivePageMap(), [ownerKey]: sessionId }));
+}
+
+function loadStoryActiveTarget(): StoryActiveTarget | null {
+  try {
+    const parsed = JSON.parse(kvGet(STORY_ACTIVE_TARGET_KEY) || "null") as StoryActiveTarget | null;
+    if (!parsed || (parsed.ownerType !== "single" && parsed.ownerType !== "group") || !parsed.ownerId) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 function cacheStoryVoice(key: string, blob: Blob) {
   if (storyVoiceCache.has(key)) storyVoiceCache.delete(key);
@@ -455,10 +496,12 @@ export function StoryApp({ onClose }: StoryAppProps) {
   const [schemeRepoVersion, setSchemeRepoVersion] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [floatingPhoneOpen, setFloatingPhoneOpen] = useState(false);
+  const [floatingGroupSessionId, setFloatingGroupSessionId] = useState("");
   const [floatingChatDraft, setFloatingChatDraft] = useState("");
   const [floatingChatGenerating, setFloatingChatGenerating] = useState(false);
   const [floatingChatVersion, setFloatingChatVersion] = useState(0);
   const [activeCharacterId, setActiveCharacterId] = useState<string>("");
+  const [activeGroupId, setActiveGroupId] = useState<string>("");
   const [activeSessionId, setActiveSessionId] = useState<string>("");
   const [messages, setMessages] = useState<StoryMessage[]>([]);
   const [visibleMessageCount, setVisibleMessageCount] = useState(STORY_INITIAL_LOAD);
@@ -478,6 +521,8 @@ export function StoryApp({ onClose }: StoryAppProps) {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
   const [cssModalOpen, setCssModalOpen] = useState(false);
+  const [quickStoryOpen, setQuickStoryOpen] = useState(false);
+  const [quickStoryIndependent, setQuickStoryIndependent] = useState(false);
   const [playingVoiceSegmentId, setPlayingVoiceSegmentId] = useState<string | null>(null);
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   const [voiceSequenceProgress, setVoiceSequenceProgress] = useState({ current: 0, total: 0 });
@@ -505,6 +550,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
   const voiceNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const voiceSequenceIndexRef = useRef(0);
   const miniPhoneScrollRef = useRef<HTMLDivElement | null>(null);
+  const autoStartedSessionIdsRef = useRef(new Set<string>());
 
   const characters = useMemo(() => loadCharacters(), []);
   const userIdentity = useMemo(
@@ -516,11 +562,26 @@ export function StoryApp({ onClose }: StoryAppProps) {
     [characters, activeCharacterId]
   );
   const sessions = loadStorySessions();
+  const storyGroups: StoryGroup[] = loadStoryGroups();
+  const activeGroup = storyGroups.find((group) => group.id === activeGroupId) || null;
+  const activeOwnerType: StoryOwnerType = activeGroup ? "group" : "single";
+  const activeOwnerId = activeGroup?.id || activeCharacterId;
+  const ownerSessions = activeOwnerId ? loadStorySessionsForOwner(activeOwnerType, activeOwnerId) : [];
+  const ownerMainSession = ownerSessions.find((session) => (session.branchId || "main") === "main") || ownerSessions[0] || null;
   const currentSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) || null,
     [sessions, activeSessionId]
   );
+  const storyDisplayName = activeGroup?.name || currentCharacter?.name || "剧情";
+  const storyAvatar = ownerMainSession?.storyAvatar || currentCharacter?.avatar || "";
   const uiPrefs = currentSession?.uiPrefs || {};
+  const customFontSource = uiPrefs.customFontDataUrl || uiPrefs.customFontUrl || "";
+  const storyShellStyle = customFontSource
+    ? ({ "--story-font": '"StoryCustomFont", "Noto Serif SC", "Songti SC", serif' } as CSSProperties)
+    : undefined;
+  const customFontFace = customFontSource
+    ? `@font-face{font-family:"StoryCustomFont";src:url(${JSON.stringify(customFontSource)});font-display:swap;}`
+    : "";
   const storySettings: StoryCharacterSettings = currentSession?.settings || {};
   // 方案定义统一来自公用仓库（所有角色共享），角色设置里只有“启用哪一个”
   const schemeRepo: StorySchemeRepository = useMemo(
@@ -543,10 +604,18 @@ export function StoryApp({ onClose }: StoryAppProps) {
       || loadPresets().find((item) => item.builtIn)
       || null;
   }, [activeCharacterId]);
+  const floatingGroupChatCandidates = useMemo(() => activeGroup
+    ? loadChatSessions().filter((item) => item.isGroup)
+    : [], [activeGroup, floatingChatVersion]);
   const floatingChatSession = useMemo(() => {
     if (!activeCharacterId) return null;
+    if (activeGroup) {
+      const selected = floatingGroupChatCandidates.find((item) => item.id === floatingGroupSessionId);
+      if (selected) return selected;
+      return floatingGroupChatCandidates.find((item) => activeGroup.characterIds.every((id) => item.participantIds?.includes(id))) || floatingGroupChatCandidates[0] || null;
+    }
     return loadChatSessions().find((item) => item.contactId === activeCharacterId && !item.isGroup) || null;
-  }, [activeCharacterId, floatingChatVersion]);
+  }, [activeCharacterId, activeGroup, floatingChatVersion, floatingGroupChatCandidates, floatingGroupSessionId]);
   const floatingChatMessages = useMemo(() => floatingChatSession
     ? loadChatMessages(floatingChatSession.id).filter((item) => item.role === "user" || item.role === "assistant").slice(-30)
     : [], [floatingChatSession, floatingChatVersion]);
@@ -569,6 +638,16 @@ export function StoryApp({ onClose }: StoryAppProps) {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    if (!activeGroup) {
+      setFloatingGroupSessionId("");
+      return;
+    }
+    if (floatingGroupSessionId && floatingGroupChatCandidates.some((item) => item.id === floatingGroupSessionId)) return;
+    const matching = floatingGroupChatCandidates.find((item) => activeGroup.characterIds.every((id) => item.participantIds?.includes(id)));
+    setFloatingGroupSessionId(matching?.id || floatingGroupChatCandidates[0]?.id || "");
+  }, [activeGroup?.id, floatingGroupChatCandidates, floatingGroupSessionId]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -599,9 +678,32 @@ export function StoryApp({ onClose }: StoryAppProps) {
     node.scrollTop = node.scrollHeight;
   }, [floatingChatGenerating, floatingChatVersion, floatingPhoneOpen]);
 
+  function activateStorySession(session: StorySession) {
+    setActiveSessionId(session.id);
+    activeSessionIdRef.current = session.id;
+    setVisibleMessageCount(STORY_INITIAL_LOAD);
+    setMessages(loadStoryMessages(session.id));
+    setCustomCssDraft(session.customCSS || "");
+    setFoldTagsDraft(session.foldTags ?? "think,thinking,story_status,story_theater");
+    setContextExcludedTagsDraft(session.contextExcludedTags ?? "think,thinking,story_theater");
+    const ownerKey = getStorySessionOwnerKey(session);
+    saveStoryActivePage(ownerKey, session.id);
+    kvSet(STORY_ACTIVE_TARGET_KEY, JSON.stringify({ ownerType: session.ownerType || "single", ownerId: session.ownerId || session.characterId }));
+    kvSet(STORY_ACTIVE_CHARACTER_KEY, session.characterId);
+    setStorageVersion((value) => value + 1);
+  }
+
+  function resolveOwnerSession(ownerType: StoryOwnerType, ownerId: string, primaryCharacterId: string, participantIds?: string[]): StorySession {
+    const main = createOrGetStorySession(primaryCharacterId, { ownerType, ownerId, participantIds, branchId: "main" });
+    const rememberedId = loadStoryActivePageMap()[`${ownerType}:${ownerId}`];
+    return loadStorySessionsForOwner(ownerType, ownerId).find((session) => session.id === rememberedId) || main;
+  }
+
   useEffect(() => {
     hydrateStoryStorage().then(() => {
       const availableCharacters = loadCharacters();
+      const groups = loadStoryGroups();
+      const rememberedTarget = loadStoryActiveTarget();
       const rememberedCharacterId = kvGet(STORY_ACTIVE_CHARACTER_KEY) || "";
       const recentCharacterId = loadStorySessions()[0]?.characterId || "";
       const initialChar = availableCharacters.some((item) => item.id === rememberedCharacterId)
@@ -609,35 +711,22 @@ export function StoryApp({ onClose }: StoryAppProps) {
         : availableCharacters.some((item) => item.id === recentCharacterId)
           ? recentCharacterId
           : availableCharacters[0]?.id || "";
-      if (initialChar) {
-        const session = createOrGetStorySession(initialChar);
+      const rememberedGroup = rememberedTarget?.ownerType === "group"
+        ? groups.find((group) => group.id === rememberedTarget.ownerId)
+        : null;
+      const groupPrimary = rememberedGroup?.characterIds.find((id) => availableCharacters.some((character) => character.id === id));
+      if (rememberedGroup && groupPrimary) {
+        setActiveGroupId(rememberedGroup.id);
+        setActiveCharacterId(groupPrimary);
+        activateStorySession(resolveOwnerSession("group", rememberedGroup.id, groupPrimary, rememberedGroup.characterIds));
+      } else if (initialChar) {
+        setActiveGroupId("");
         setActiveCharacterId(initialChar);
-        setActiveSessionId(session.id);
-        activeSessionIdRef.current = session.id; // 同步更新，堵住生成完成回调的守卫空窗
-        setVisibleMessageCount(STORY_INITIAL_LOAD);
-        setMessages(loadStoryMessages(session.id));
-        setCustomCssDraft(session.customCSS || "");
-        setFoldTagsDraft(session.foldTags ?? "think,thinking,story_status,story_theater");
-        setContextExcludedTagsDraft(session.contextExcludedTags ?? "think,thinking,story_theater");
-        setStorageVersion((value) => value + 1);
+        activateStorySession(resolveOwnerSession("single", initialChar, initialChar, [initialChar]));
       }
       setReady(true);
     });
   }, []);
-
-  useEffect(() => {
-    if (!activeCharacterId) return;
-    kvSet(STORY_ACTIVE_CHARACTER_KEY, activeCharacterId);
-    const session = createOrGetStorySession(activeCharacterId);
-    setActiveSessionId(session.id);
-    activeSessionIdRef.current = session.id; // 同步更新，堵住生成完成回调的守卫空窗
-    setVisibleMessageCount(STORY_INITIAL_LOAD);
-    setMessages(loadStoryMessages(session.id));
-    setCustomCssDraft(session.customCSS || "");
-    setFoldTagsDraft(session.foldTags ?? "think,thinking,story_status,story_theater");
-    setContextExcludedTagsDraft(session.contextExcludedTags ?? "think,thinking,story_theater");
-    setStorageVersion((value) => value + 1);
-  }, [activeCharacterId]);
 
   useEffect(() => {
     setAutoReading(false);
@@ -1045,6 +1134,176 @@ export function StoryApp({ onClose }: StoryAppProps) {
     setStorageVersion((value) => value + 1);
   }
 
+  function handleStoryCharacterChange(characterId: string) {
+    if (!characters.some((character) => character.id === characterId)) return;
+    setActiveGroupId("");
+    setActiveCharacterId(characterId);
+    activateStorySession(resolveOwnerSession("single", characterId, characterId, [characterId]));
+  }
+
+  function handleStoryGroupSelect(groupId: string) {
+    const group = loadStoryGroups().find((item) => item.id === groupId);
+    if (!group) return;
+    const primaryId = group.characterIds.find((id) => characters.some((character) => character.id === id));
+    if (!primaryId) return;
+    setActiveGroupId(group.id);
+    setActiveCharacterId(primaryId);
+    activateStorySession(resolveOwnerSession("group", group.id, primaryId, group.characterIds));
+  }
+
+  function handleStoryGroupCreate(characterIds: string[], name: string) {
+    const validIds = Array.from(new Set(characterIds.filter((id) => characters.some((character) => character.id === id))));
+    if (validIds.length < 2) return;
+    const group = createStoryGroup(validIds, name);
+    const primaryId = validIds[0];
+    const baseSession = loadStorySessionsForOwner("single", primaryId).find((session) => (session.branchId || "main") === "main");
+    const session = createOrGetStorySession(primaryId, {
+      ownerType: "group",
+      ownerId: group.id,
+      participantIds: validIds,
+      branchId: "main",
+      baseSession,
+    });
+    setActiveGroupId(group.id);
+    setActiveCharacterId(primaryId);
+    activateStorySession(session);
+  }
+
+  function handleStoryGroupDelete(groupId: string) {
+    const deletingActive = activeGroupId === groupId;
+    deleteStoryGroup(groupId);
+    if (deletingActive && activeCharacterId) {
+      setActiveGroupId("");
+      activateStorySession(resolveOwnerSession("single", activeCharacterId, activeCharacterId, [activeCharacterId]));
+    } else {
+      setStorageVersion((value) => value + 1);
+    }
+  }
+
+  function handleStorySessionSelect(sessionId: string) {
+    const session = loadStorySessions().find((item) => item.id === sessionId);
+    if (!session) return;
+    activateStorySession(session);
+  }
+
+  function handleStoryBranchCreate(input: { name: string; inheritRecentMemory: boolean; independentStory: boolean }) {
+    if (!activeOwnerId || !activeCharacterId) return;
+    const mainSession = loadStorySessionsForOwner(activeOwnerType, activeOwnerId).find((session) => (session.branchId || "main") === "main") || currentSession || undefined;
+    const session = createOrGetStorySession(activeCharacterId, {
+      ownerType: activeOwnerType,
+      ownerId: activeOwnerId,
+      participantIds: activeGroup?.characterIds || [activeCharacterId],
+      branchId: `branch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      branchName: input.name,
+      inheritRecentMemory: input.inheritRecentMemory,
+      independentStory: input.independentStory,
+      baseSession: mainSession,
+    });
+    activateStorySession(session);
+  }
+
+  function handleStoryBranchDelete(sessionIds: string[]) {
+    const deletingActive = sessionIds.includes(activeSessionId);
+    deleteStorySessions(sessionIds);
+    if (deletingActive) {
+      const main = loadStorySessionsForOwner(activeOwnerType, activeOwnerId).find((session) => (session.branchId || "main") === "main");
+      if (main) activateStorySession(main);
+    } else {
+      setStorageVersion((value) => value + 1);
+    }
+  }
+
+  function handleStorySessionUpdate(sessionId: string, updates: Partial<StorySession>) {
+    const next = updateStorySession(sessionId, updates);
+    if (!next) return;
+    if (next.id === activeSessionId) {
+      setCustomCssDraft(next.customCSS || "");
+      setFoldTagsDraft(next.foldTags ?? "think,thinking,story_status,story_theater");
+      setContextExcludedTagsDraft(next.contextExcludedTags ?? "think,thinking,story_theater");
+    }
+    setStorageVersion((value) => value + 1);
+  }
+
+  function cleanStoryTextForExport(text: string): string {
+    return text
+      .replace(/<(?:think|thinking|story_status|story_theater|summary)[^>]*>[\s\S]*?<\/(?:think|thinking|story_status|story_theater|summary)>/gi, "")
+      .replace(/<[^>]+>/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function storyChapterTitle(session: StorySession, branchIndex: number): string {
+    if ((session.branchId || "main") === "main") return "主线";
+    return `分线${branchIndex}「${session.branchName || `分线剧情 ${branchIndex}`}」`;
+  }
+
+  function buildStoryTxt(session: StorySession, chapterTitle: string, includeBookTitle = true): string {
+    const rows = loadStoryMessages(session.id)
+      .map((message) => {
+        const content = cleanStoryTextForExport(message.renderedContent || message.rawContent);
+        if (!content) return "";
+        const speaker = message.role === "assistant" ? storyDisplayName : message.role === "user" ? (userIdentity?.name || "我") : "旁白";
+        return `${speaker}\n${content}`;
+      })
+      .filter(Boolean);
+    return [includeBookTitle ? `《${storyDisplayName}》` : "", chapterTitle, "", ...rows].filter((item, index) => index !== 0 || Boolean(item)).join("\n\n");
+  }
+
+  function safeStoryFilename(value: string): string {
+    return value.replace(/[\\/:*?"<>|]/g, "-").slice(0, 60) || "剧情";
+  }
+
+  function handleExportStorySession(sessionId: string) {
+    const session = loadStorySessions().find((item) => item.id === sessionId);
+    if (!session) return;
+    const ownerSessions = loadStorySessionsForOwner(session.ownerType || "single", session.ownerId || session.characterId);
+    const branchIndex = Math.max(1, ownerSessions.filter((item) => (item.branchId || "main") !== "main").findIndex((item) => item.id === session.id) + 1);
+    const chapterTitle = storyChapterTitle(session, branchIndex);
+    const blob = new Blob([buildStoryTxt(session, chapterTitle)], { type: "text/plain;charset=utf-8" });
+    void downloadFile(blob, `${safeStoryFilename(storyDisplayName)}-${safeStoryFilename(chapterTitle)}.txt`)
+      .catch((error) => alert(error instanceof Error ? error.message : "导出失败"));
+  }
+
+  function handleExportAllStories() {
+    const sessions = loadStorySessionsForOwner(activeOwnerType, activeOwnerId);
+    let branchIndex = 0;
+    const chapters = sessions.map((session) => {
+      if ((session.branchId || "main") !== "main") branchIndex += 1;
+      return { session, title: storyChapterTitle(session, Math.max(1, branchIndex)) };
+    });
+    const directory = ["目录", ...chapters.map((chapter) => chapter.title)].join("\n");
+    const sections = chapters.map((chapter) => buildStoryTxt(chapter.session, chapter.title, false));
+    const text = [`《${storyDisplayName}》`, directory, ...sections].join("\n\n\n====================\n\n\n");
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    void downloadFile(blob, `${safeStoryFilename(storyDisplayName)}-全部剧情.txt`)
+      .catch((error) => alert(error instanceof Error ? error.message : "导出失败"));
+  }
+
+  function handleQuickStoryCreate() {
+    if (!activeOwnerId || !activeCharacterId) return;
+    const now = new Date();
+    const branchName = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const baseSession = ownerMainSession || currentSession || undefined;
+    if (currentSession) updateStorySession(currentSession.id, { endedAt: now.toISOString() });
+    const session = createOrGetStorySession(activeCharacterId, {
+      ownerType: activeOwnerType,
+      ownerId: activeOwnerId,
+      participantIds: activeGroup?.characterIds || [activeCharacterId],
+      branchId: `quick_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      branchName,
+      inheritRecentMemory: !quickStoryIndependent,
+      independentStory: quickStoryIndependent,
+      baseSession,
+    });
+    const prompt = quickStoryIndependent
+      ? `这是一个独立的新剧情，不继承主线上下文。请由${storyDisplayName}自然开启一个全新的见面场景。`
+      : `当前剧情已经结束，请结合最近上下文，由${storyDisplayName}自然开启一段新的见面剧情。`;
+    const next = updateStorySession(session.id, { autoStartPrompt: prompt, autoStartRequestedAt: now.toISOString() }) || session;
+    setQuickStoryOpen(false);
+    setQuickStoryIndependent(false);
+    activateStorySession(next);
+  }
+
   const showVoiceNotice = useCallback((message: string) => {
     setVoiceNotice(message);
     if (voiceNoticeTimerRef.current) clearTimeout(voiceNoticeTimerRef.current);
@@ -1189,6 +1448,12 @@ export function StoryApp({ onClose }: StoryAppProps) {
         sessionContextExcludedTags: currentSession?.contextExcludedTags,
         settings: currentSession?.settings,
         floatingChatContext,
+        participantIds: currentSession?.participantIds || [characterId],
+        storyMemory: {
+          independent: currentSession?.independentStory,
+          inheritRecentMemory: currentSession?.inheritRecentMemory ?? true,
+          startedAt: currentSession?.createdAt,
+        },
         signal: generationRun.controller.signal,
       });
       if (!isCurrentGeneration()) return;
@@ -1206,13 +1471,18 @@ export function StoryApp({ onClose }: StoryAppProps) {
       }
       setStorageVersion((value) => value + 1);
 
-      const storyCharacter = characters.find((character) => character.id === characterId);
-      if (storyCharacter) {
+      const memoryCharacterIds = currentSession?.participantIds?.length ? currentSession.participantIds : [characterId];
+      const storyCharacters = memoryCharacterIds
+        .map((id) => characters.find((character) => character.id === id))
+        .filter((item): item is NonNullable<typeof item> => Boolean(item));
+      if (storyCharacters.length && !currentSession?.independentStory) {
         void (async () => {
           try {
-            incrementEventCounter(characterId);
-            incrementEventCounter(characterId);
-            await maybeRunSummarization(characterId, storyCharacter.name);
+            for (const storyCharacter of storyCharacters) {
+              incrementEventCounter(storyCharacter.id);
+              incrementEventCounter(storyCharacter.id);
+              await maybeRunSummarization(storyCharacter.id, storyCharacter.name);
+            }
           } catch (err) {
             console.warn("[StoryApp] Memory counter/summarization failed:", err);
           }
@@ -1238,6 +1508,75 @@ export function StoryApp({ onClose }: StoryAppProps) {
     }
   }
 
+  // 私聊邀请/快捷新分线进入后，由角色直接开场；提示只参与本次生成，不渲染成用户气泡。
+  useEffect(() => {
+    const session = currentSession;
+    const prompt = session?.autoStartPrompt?.trim();
+    if (!ready || !session || !prompt || !activeCharacterId || isGenerating) return;
+    if (autoStartedSessionIdsRef.current.has(session.id)) return;
+    autoStartedSessionIdsRef.current.add(session.id);
+    updateStorySession(session.id, { autoStartPrompt: undefined, autoStartRequestedAt: undefined });
+
+    const sessionId = session.id;
+    const characterId = activeCharacterId;
+    const virtualMessage: StoryMessage = {
+      id: `story_auto_${Date.now()}`,
+      sessionId,
+      role: "user",
+      rawContent: prompt,
+      renderedContent: prompt,
+      createdAt: session.autoStartRequestedAt || new Date().toISOString(),
+    };
+    markGenerating(sessionId, true);
+    const generationRun = createStoryGenerationRun(sessionId);
+    const generationRunId = generationRun.runId;
+    const isCurrentGeneration = () => mountedRef.current && isStoryGenerationRunActive(sessionId, generationRunId);
+
+    void generateStoryCompletion(characterId, [...loadStoryMessages(sessionId), virtualMessage], {
+      sessionFoldTags: session.foldTags,
+      sessionContextExcludedTags: session.contextExcludedTags,
+      settings: session.settings,
+      floatingChatContext,
+      participantIds: session.participantIds || [characterId],
+      storyMemory: {
+        independent: session.independentStory,
+        inheritRecentMemory: session.inheritRecentMemory ?? true,
+        startedAt: session.createdAt,
+      },
+      signal: generationRun.controller.signal,
+    }).then((result) => {
+      if (!isCurrentGeneration()) return;
+      pushStoryMessage({
+        sessionId,
+        role: "assistant",
+        rawContent: result.rawText,
+        renderedContent: result.renderedText,
+        storySummary: result.storySummary,
+        regexSignature: result.regexSignature,
+        parserVersion: result.parserVersion,
+      });
+      if (activeSessionIdRef.current === sessionId) setMessages(loadStoryMessages(sessionId));
+      setStorageVersion((value) => value + 1);
+
+      if (!session.independentStory) {
+        for (const id of session.participantIds?.length ? session.participantIds : [characterId]) {
+          const item = characters.find((candidate) => candidate.id === id);
+          if (!item) continue;
+          incrementEventCounter(item.id);
+          void maybeRunSummarization(item.id, item.name).catch(() => undefined);
+        }
+      }
+    }).catch((error) => {
+      if (!isCurrentGeneration() || isAbortLikeError(error)) return;
+      const text = error instanceof Error ? error.message : "剧情自动开场失败，请点击续写重试。";
+      pushStoryMessage({ sessionId, role: "system", rawContent: text, renderedContent: text });
+      if (activeSessionIdRef.current === sessionId) setMessages(loadStoryMessages(sessionId));
+      setStorageVersion((value) => value + 1);
+    }).finally(() => {
+      if (finishStoryGenerationRun(sessionId, generationRunId)) markGenerating(sessionId, false);
+    });
+  }, [activeCharacterId, activeSessionId, currentSession?.autoStartPrompt, ready]);
+
   async function handleFloatingChatSend() {
     const text = floatingChatDraft.trim();
     if (!text || !activeCharacterId || floatingChatGenerating) return;
@@ -1249,43 +1588,61 @@ export function StoryApp({ onClose }: StoryAppProps) {
     setFloatingChatGenerating(true);
     try {
       await hydrateChatStorage();
-      const chatSession = createOrGetSession(characterId);
+      const chatSession = activeGroup ? floatingChatSession : createOrGetSession(characterId);
+      if (!chatSession) throw new Error("若没有群聊建议先建一个群聊");
       pushChatMessage({ sessionId: chatSession.id, role: "user", content: text, origin: "story_floating_phone" });
       setFloatingChatVersion((value) => value + 1);
 
       const history = loadChatMessages(chatSession.id);
-      const completion = await generateChatCompletion(chatSession, history, { appTags: ["chat", "text"], appId: "chat" });
-      const rawReply = flattenCompletionResult(completion).trim();
-      if (!rawReply) throw new Error("角色没有返回可显示的聊天内容");
-      const previousState = [...history].reverse().find((item) => item.stateValues?.length)?.stateValues || [];
-      const parsed = parseAIResponse(rawReply, previousState);
-      const parts = parsed.parts.length ? parsed.parts : [{ content: rawReply }];
       const replyLines: string[] = [];
-      parts.forEach((part, index) => {
-        const saved = pushChatMessage({
-          sessionId: chatSession.id,
-          role: "assistant",
-          content: part.content,
-          mediaType: part.mediaType,
-          mediaData: part.mediaData,
-          senderCharacterId: characterId,
-          senderName: characterName,
-          origin: "story_floating_phone",
-          statusPanel: index === 0 ? (parsed.statusPanel || undefined) : undefined,
-          innerMonologue: index === 0 ? (parsed.innerMonologue || undefined) : undefined,
-          stateValues: index === 0 && parsed.stateValues.length ? parsed.stateValues : undefined,
-          freshStateValues: index === 0 && parsed.freshStateValues.length ? parsed.freshStateValues : undefined,
+      if (activeGroup) {
+        const results = await generateGroupChatCompletion(chatSession, history, undefined, { appTags: ["group_chat", "text"] });
+        if (!results.length) throw new Error("群聊没有返回可显示的聊天内容");
+        results.forEach((result) => {
+          const parsed = parseAIResponse(result.responseText, []);
+          const parts = parsed.parts.length ? parsed.parts : [{ content: result.responseText }];
+          parts.forEach((part, index) => {
+            pushChatMessage({
+              sessionId: chatSession.id, role: "assistant", content: part.content,
+              mediaType: part.mediaType, mediaData: part.mediaData,
+              senderCharacterId: result.characterId, senderName: result.characterName,
+              origin: "story_floating_phone",
+              statusPanel: index === 0 ? (parsed.statusPanel || undefined) : undefined,
+              innerMonologue: index === 0 ? (parsed.innerMonologue || undefined) : undefined,
+              stateValues: index === 0 && parsed.stateValues.length ? parsed.stateValues : undefined,
+              freshStateValues: index === 0 && parsed.freshStateValues.length ? parsed.freshStateValues : undefined,
+            });
+            const visible = part.content.trim() || part.mediaData?.label || (part.mediaType ? `[${part.mediaType}]` : "");
+            if (visible) replyLines.push(`${result.characterName}：${visible}`);
+          });
         });
-        void saved;
-        const visible = part.content.trim() || part.mediaData?.label || (part.mediaType ? `[${part.mediaType}]` : "");
-        if (visible) replyLines.push(visible);
-      });
+      } else {
+        const completion = await generateChatCompletion(chatSession, history, { appTags: ["chat", "text"], appId: "chat" });
+        const rawReply = flattenCompletionResult(completion).trim();
+        if (!rawReply) throw new Error("角色没有返回可显示的聊天内容");
+        const previousState = [...history].reverse().find((item) => item.stateValues?.length)?.stateValues || [];
+        const parsed = parseAIResponse(rawReply, previousState);
+        const parts = parsed.parts.length ? parsed.parts : [{ content: rawReply }];
+        parts.forEach((part, index) => {
+          pushChatMessage({
+            sessionId: chatSession.id, role: "assistant", content: part.content,
+            mediaType: part.mediaType, mediaData: part.mediaData,
+            senderCharacterId: characterId, senderName: characterName, origin: "story_floating_phone",
+            statusPanel: index === 0 ? (parsed.statusPanel || undefined) : undefined,
+            innerMonologue: index === 0 ? (parsed.innerMonologue || undefined) : undefined,
+            stateValues: index === 0 && parsed.stateValues.length ? parsed.stateValues : undefined,
+            freshStateValues: index === 0 && parsed.freshStateValues.length ? parsed.freshStateValues : undefined,
+          });
+          const visible = part.content.trim() || part.mediaData?.label || (part.mediaType ? `[${part.mediaType}]` : "");
+          if (visible) replyLines.push(`${characterName}：${visible}`);
+        });
+      }
 
       const stamp = new Date().toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
       const transcript = [
         `【线上聊天 · ${stamp}】`,
         `${userName}：${text}`,
-        ...replyLines.map((line) => `${characterName}：${line}`),
+        ...replyLines,
       ].join("\n");
       if (storySessionId) {
         pushStoryMessage({ sessionId: storySessionId, role: "system", rawContent: transcript, renderedContent: transcript });
@@ -1296,7 +1653,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
       setFloatingChatVersion((value) => value + 1);
     } catch (error) {
       const message = error instanceof Error ? error.message : "悬浮聊天发送失败";
-      const chatSession = loadChatSessions().find((item) => item.contactId === characterId && !item.isGroup);
+      const chatSession = floatingChatSession || loadChatSessions().find((item) => item.contactId === characterId && !item.isGroup);
       if (chatSession) pushChatMessage({ sessionId: chatSession.id, role: "system", content: `⚠️ ${message}` });
       setFloatingChatVersion((value) => value + 1);
       showVoiceNotice(message);
@@ -1463,6 +1820,12 @@ export function StoryApp({ onClose }: StoryAppProps) {
         sessionContextExcludedTags: currentSession?.contextExcludedTags,
         settings: currentSession?.settings,
         floatingChatContext,
+        participantIds: currentSession?.participantIds || [characterId],
+        storyMemory: {
+          independent: currentSession?.independentStory,
+          inheritRecentMemory: currentSession?.inheritRecentMemory ?? true,
+          startedAt: currentSession?.createdAt,
+        },
         signal: generationRun.controller.signal,
       });
       if (!isCurrentGeneration()) return;
@@ -1536,10 +1899,15 @@ export function StoryApp({ onClose }: StoryAppProps) {
 
   if (settingsOpen) {
     return (
-      <div className={`story-app-shell story-session-${currentSession.id}`} data-story-theme={uiPrefs.theme || "paper"}>
+      <div className={`story-app-shell story-session-${currentSession.id}`} data-story-theme={uiPrefs.theme || "paper"} style={storyShellStyle}>
+        {customFontFace ? <style>{customFontFace}</style> : null}
         <StorySettingsPage
           characters={characters}
           activeCharacterId={activeCharacterId}
+          activeGroupId={activeGroupId}
+          groups={storyGroups}
+          ownerSessions={ownerSessions}
+          activeSessionId={activeSessionId}
           userName={userIdentity?.name || "用户"}
           uiPrefs={uiPrefs}
           settings={storySettings}
@@ -1548,7 +1916,20 @@ export function StoryApp({ onClose }: StoryAppProps) {
           foldTags={foldTagsDraft}
           contextExcludedTags={contextExcludedTagsDraft}
           onClose={() => setSettingsOpen(false)}
-          onCharacterChange={setActiveCharacterId}
+          onCharacterChange={handleStoryCharacterChange}
+          onGroupSelect={handleStoryGroupSelect}
+          onGroupCreate={handleStoryGroupCreate}
+          onGroupRename={(groupId, name) => {
+            updateStoryGroup(groupId, { name });
+            setStorageVersion((value) => value + 1);
+          }}
+          onGroupDelete={handleStoryGroupDelete}
+          onSessionSelect={handleStorySessionSelect}
+          onBranchCreate={handleStoryBranchCreate}
+          onBranchDelete={handleStoryBranchDelete}
+          onSessionUpdate={handleStorySessionUpdate}
+          onExportSession={handleExportStorySession}
+          onExportAll={handleExportAllStories}
           onUiPrefsChange={(next) => applySessionUpdates({ uiPrefs: next })}
           onSettingsChange={(next) => applySessionUpdates({ settings: next })}
           onSchemeRepoChange={saveStorySchemeRepository}
@@ -1580,6 +1961,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
     <div
       className={`story-app-shell story-session-${currentSession.id}`}
       data-story-theme={uiPrefs.theme || "paper"}
+      style={storyShellStyle}
       onTouchStart={(event) => handleTouchStart(event.touches[0]?.clientX || 0)}
       onTouchMove={(event) => handleTouchMove(event.touches[0]?.clientX || 0)}
       onTouchEnd={handleTouchEnd}
@@ -1591,6 +1973,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
       onMouseLeave={handleTouchEnd}
     >
       {/* Styles moved to styles/story.css */}
+      {customFontFace ? <style>{customFontFace}</style> : null}
       {uiPrefs.wallpaper ? <div className="story-wallpaper-layer" style={{ backgroundImage: `url(${uiPrefs.wallpaper})` }} /> : null}
       {currentSession.customCSS ? (
         <SessionCustomCSS css={currentSession.customCSS} scope={sessionScope} />
@@ -1607,12 +1990,15 @@ export function StoryApp({ onClose }: StoryAppProps) {
                 <SolidBackIcon size={16} />
               </button>
               <div className="story-header-person">
-                <Avatar src={currentCharacter.avatar || undefined} name={currentCharacter.name} size="sm" />
-                <span>{currentCharacter.name}</span>
+                <Avatar src={storyAvatar || undefined} name={storyDisplayName} size="sm" />
+                <span>{storyDisplayName}</span>
               </div>
             </div>
             <div className="story-header-center" />
             <div className="story-header-right" style={{ gap: 8 }}>
+              <button className="story-top-btn" onClick={() => setQuickStoryOpen(true)} aria-label="快捷进入新剧情">
+                <PlusIcon width={16} height={16} />
+              </button>
               <button className="story-top-btn" onClick={() => setCssModalOpen(true)} aria-label="页面样式">
                 <PaintBrushIcon width={16} height={16} />
               </button>
@@ -1640,20 +2026,20 @@ export function StoryApp({ onClose }: StoryAppProps) {
             <div className="story-meta">
               <div className="story-meta-layout">
                 <div className="story-meta-cover">
-                  {currentCharacter.avatar ? (
-                    <img src={currentCharacter.avatar} alt="cover" />
+                  {storyAvatar ? (
+                    <img src={storyAvatar} alt="cover" />
                   ) : (
                     <div className="story-meta-cover-fallback" aria-hidden="true">
-                      <span className="story-meta-cover-char">{currentCharacter.name.trim().charAt(0) || "书"}</span>
+                      <span className="story-meta-cover-char">{storyDisplayName.trim().charAt(0) || "书"}</span>
                       <span className="story-meta-cover-line" />
                       <span className="story-meta-cover-sub">STORY</span>
                     </div>
                   )}
                 </div>
                 <div className="story-meta-body">
-                  <div className="story-meta-title">本次阅读：《 {currentCharacter.name} 》</div>
+                  <div className="story-meta-title">本次阅读：《 {storyDisplayName} 》</div>
                   <div className="story-meta-tags">
-                    {userIdentity?.name || "我"} x {currentCharacter.name}
+                    {userIdentity?.name || "我"} x {storyDisplayName}
                   </div>
                   <div className="story-meta-desc">
                     {/* Character type might not have description, so we use a stylized default text */}
@@ -1689,7 +2075,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
                   const speakerName = message.role === "user"
                     ? (userIdentity?.name?.trim() || "我")
                     : message.role === "assistant"
-                      ? currentCharacter.name
+                      ? storyDisplayName
                       : "系统";
                   const avatarUrl = message.role === "user"
                     ? (userIdentity?.avatarUrl || undefined)
@@ -1792,7 +2178,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
             )}
             {isGenerating ? (
               <StoryGeneratingIndicator
-                characterName={currentCharacter.name}
+                characterName={storyDisplayName}
                 avatar={currentCharacter.avatar || undefined}
               />
             ) : null}
@@ -1837,14 +2223,19 @@ export function StoryApp({ onClose }: StoryAppProps) {
       {floatingPhoneOpen ? (
         <div className="story-mini-phone-overlay" onClick={() => setFloatingPhoneOpen(false)}>
           <section className="story-mini-phone" onClick={(event) => event.stopPropagation()}>
-            <header><button type="button" onClick={() => setFloatingPhoneOpen(false)}><XMarkIcon width={15} /></button><div><Avatar src={currentCharacter.avatar || undefined} name={currentCharacter.name} size="sm" /><strong>{currentCharacter.name}</strong></div><span /></header>
+            <header><button type="button" onClick={() => setFloatingPhoneOpen(false)}><XMarkIcon width={15} /></button><div><Avatar src={storyAvatar || undefined} name={storyDisplayName} size="sm" /><strong>{activeGroup ? (floatingChatSession?.groupName || "选择群聊") : currentCharacter.name}</strong></div><span /></header>
+            {activeGroup ? (
+              floatingGroupChatCandidates.length ? (
+                <label className="story-mini-phone-group-select"><span>悬浮小手机群聊</span><select value={floatingChatSession?.id || ""} onChange={(event) => setFloatingGroupSessionId(event.target.value)}>{floatingGroupChatCandidates.map((item) => <option key={item.id} value={item.id}>{item.groupName || "未命名群聊"}</option>)}</select></label>
+              ) : <p className="story-mini-phone-group-empty">若没有群聊建议先建一个群聊</p>
+            ) : null}
             <div className="story-mini-phone-messages" ref={miniPhoneScrollRef}>
               {floatingChatMessages.length ? floatingChatMessages.map((message) => (
                 <div key={message.id} data-role={message.role}>
-                  <small>{message.role === "user" ? (userIdentity?.name || "我") : currentCharacter.name} · {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</small>
+                  <small>{message.role === "user" ? (userIdentity?.name || "我") : (message.senderName || currentCharacter.name)} · {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</small>
                   <p>{message.content || message.mediaData?.label || (message.mediaType ? `[${message.mediaType}]` : "")}</p>
                 </div>
-              )) : <p className="story-mini-phone-empty">还没有与该角色的线上聊天记录</p>}
+              )) : <p className="story-mini-phone-empty">{activeGroup && !floatingChatSession ? "若没有群聊建议先建一个群聊" : "还没有线上聊天记录"}</p>}
               {floatingChatGenerating ? <div className="story-mini-phone-typing"><i /><i /><i /></div> : null}
             </div>
             <div className="story-mini-phone-composer">
@@ -1858,13 +2249,30 @@ export function StoryApp({ onClose }: StoryAppProps) {
                     void handleFloatingChatSend();
                   }
                 }}
-                placeholder="发消息…"
-                disabled={floatingChatGenerating}
+                placeholder={activeGroup && !floatingChatSession ? "若没有群聊建议先建一个群聊" : "发消息…"}
+                disabled={floatingChatGenerating || Boolean(activeGroup && !floatingChatSession)}
               />
-              <button type="button" onClick={() => { void handleFloatingChatSend(); }} disabled={!floatingChatDraft.trim() || floatingChatGenerating} aria-label="发送消息">
+              <button type="button" onClick={() => { void handleFloatingChatSend(); }} disabled={!floatingChatDraft.trim() || floatingChatGenerating || Boolean(activeGroup && !floatingChatSession)} aria-label="发送消息">
                 {floatingChatGenerating ? <span>···</span> : <PaperAirplaneIcon width={14} />}
               </button>
             </div>
+          </section>
+        </div>
+      ) : null}
+
+      {quickStoryOpen ? (
+        <div className="story-dialog-backdrop story-quick-story-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setQuickStoryOpen(false);
+        }}>
+          <section className="story-dialog story-quick-story-dialog" role="dialog" aria-modal="true" aria-label="快捷进入新剧情">
+            <header><strong>快捷进入新剧情</strong><button type="button" onClick={() => setQuickStoryOpen(false)}><XMarkIcon width={16} /></button></header>
+            <p className="story-quick-story-question">是否结束当前剧情，快捷进入新剧情？</p>
+            <p className="story-settings-note">新分线会按当前时间自动命名，之后可在剧情目录中修改。</p>
+            <label className="story-settings-toggle-row">
+              <span><strong>独立剧情分线</strong></span>
+              <input type="checkbox" checked={quickStoryIndependent} onChange={(event) => setQuickStoryIndependent(event.target.checked)} />
+            </label>
+            <footer><button type="button" onClick={() => setQuickStoryOpen(false)}>取消</button><button type="button" className="story-settings-primary" onClick={handleQuickStoryCreate}>结束并新建</button></footer>
           </section>
         </div>
       ) : null}

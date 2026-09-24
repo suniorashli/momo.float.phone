@@ -71,3 +71,26 @@ export function requestStatusBarPreview(request: StatusBarPreviewRequest): boole
   window.dispatchEvent(new CustomEvent<StatusBarPreviewEventDetail>(STATUS_BAR_PREVIEW_EVENT, { detail }));
   return detail.handled;
 }
+
+// ── Mascot → UI: open meeting invitation card preview dialog ──
+export const MEETING_INVITE_PREVIEW_EVENT = "mascot-meeting-invite-preview";
+
+export type MeetingInvitePreviewRequest = {
+  /** 弹窗标题中的来源说明。 */
+  displayName: string;
+  /** 完整 HTML/CSS/JS，使用与真实邀请卡片相同的沙盒渲染器。 */
+  renderHtml: string;
+  /** 邀请卡片示例原文，注入 window.STATUS_RAW。 */
+  previewRaw: string;
+};
+
+export type MeetingInvitePreviewEventDetail = {
+  request: MeetingInvitePreviewRequest;
+  handled: boolean;
+};
+
+export function requestMeetingInvitePreview(request: MeetingInvitePreviewRequest): boolean {
+  const detail: MeetingInvitePreviewEventDetail = { request, handled: false };
+  window.dispatchEvent(new CustomEvent<MeetingInvitePreviewEventDetail>(MEETING_INVITE_PREVIEW_EVENT, { detail }));
+  return detail.handled;
+}

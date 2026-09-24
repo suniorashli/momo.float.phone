@@ -1,5 +1,5 @@
 // lib/mascot-tools.ts
-// 小卷工具系统：11 个套件 + 67 个细粒度工具，支持文本协议和原生协议双轨。
+// 小卷工具系统：12 个套件，支持文本协议和原生协议双轨。
 //
 // 套件设计（默认只暴露 loader，按需展开）：
 //   - 角色卡套件 (character_pack)     — 3 个子工具
@@ -9,6 +9,7 @@
 //   - CSS套件 (css_pack)              — 3 个子工具
 //   - 图像处理套件 (image_pack)       — 10 个子工具
 //   - 线上聊天状态栏 (status_bar_pack) — 3 个子工具
+//   - 邀请见面卡片 (meeting_invite_pack) — 3 个子工具
 //   - 剧情方案套件 (story_scheme_pack) — 5 个子工具（剧情状态栏/小剧场方案）
 //   - 桌面组件套件 (widget_pack)      — 6 个子工具
 //   - 独家特调套件 (mixology_pack)    — 9 个子工具
@@ -767,6 +768,50 @@ const STATUS_BAR_PROMPT = `线上聊天状态栏 = 让 AI 每轮在 [状态栏].
 · **启用后原生的好感度/占有欲/焦虑值会停止更新**（状态区整块被契约取代了）。
 · 如果该会话之前用正则渲染过状态栏，两套会互相竞争，让用户二选一。`;
 
+// ── 邀请见面卡片（全局私聊）──────────────────────────
+const READ_MEETING_INVITE_SCHEMA = {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+};
+
+const WRITE_MEETING_INVITE_SCHEMA = {
+    type: "object",
+    properties: {
+        contract: { type: "string", description: "邀请触发与字段输出规则。应说明角色按语境自主邀请，并列出希望角色填写的 key=value 字段；系统会自动加不可见的 [邀请见面] 包裹。" },
+        renderHtml: { type: "string", description: "完整 HTML/CSS/JS。用 window.STATUS_RAW 或 {{RAW}} 读取示例数据；同意/拒绝按钮必须分别带 data-meeting-action=\"accept\" 和 data-meeting-action=\"decline\"。" },
+        previewRaw: { type: "string", description: "预览示例数据，字段必须和契约、HTML 一致；建议包含邀请人、标题、说明、同意反应、拒绝反应、状态=pending。" },
+    },
+    required: ["contract", "renderHtml", "previewRaw"],
+    additionalProperties: false,
+};
+
+const PREVIEW_MEETING_INVITE_SCHEMA = {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+};
+
+const MEETING_INVITE_PROMPT = `邀请见面卡片是全局私聊功能。小卷可以直接制作并保存一份“触发契约 + HTML 渲染 + 示例数据”。
+
+===== 工作流 =====
+1. 先用「读取邀请见面卡片」查看现有方案；已有自定义内容时，应先确认是覆盖还是在原基础上改。
+2. 用「写邀请见面卡片」一次写入完整契约、完整 HTML/CSS/JS 与示例数据，写入后自动启用自定义卡片。
+3. 用「预览邀请见面卡片」弹出真实沙盒预览。
+
+===== HTML 硬规则 =====
+· renderHtml 是完整 HTML，可包含 <style> 与 <script>，不是只能写 CSS。
+· 数据从 window.STATUS_RAW 读取；{{RAW}} 也可用于安全的纯文本直插。
+· 同意按钮必须有 data-meeting-action="accept"，拒绝按钮必须有 data-meeting-action="decline"，否则页面看起来有按钮但不能执行真实操作。
+· 不要写 100vh/100dvh；卡片高度由外层自动测量。
+· 沙盒不能访问宿主页面或发起网络请求，素材应使用可公开访问的 URL。
+· 示例数据必须与脚本解析的字段完全一致，默认建议：邀请人、标题、说明、同意反应、拒绝反应、状态=pending。
+· 契约只写卡片的触发逻辑和字段格式，不再要求旧的 [线下见面邀请] 单标记；系统会在发给角色时自动加 [邀请见面]...[/邀请见面] 包裹，包裹不会显示给用户。
+
+写完后告诉用户：可在“聊天 → 我的 → 全局聊天信息 → 邀请见面卡片 CSS 样式”继续修改。`;
+
 
 // ── 剧情 APP 尾部方案（状态栏方案 / 小剧场方案）────────
 const STORY_SCHEME_SESSION_DESC = "剧情会话名：填角色名或剧情标题。不传则用当前打开的剧情会话；没打开时返回可选列表。";
@@ -1141,6 +1186,17 @@ export const MASCOT_TOOL_PACKAGES: MascotToolPackage[] = [
         usageGuide: STATUS_BAR_PROMPT,
     },
     {
+        id: "meeting_invite_pack",
+        label: "邀请见面卡片套件",
+        description: "让小卷为全局私聊制作邀请见面卡片：支持完整 HTML/CSS/JS、触发契约、示例数据与真实沙盒预览。保存后所有私聊共用，用户仍可在全局聊天信息里继续修改。",
+        subTools: [
+            { name: "读取邀请见面卡片", description: "读取当前全局邀请见面卡片的模式、触发契约、完整 HTML 渲染与示例数据。修改前必读。", parameterSchema: READ_MEETING_INVITE_SCHEMA },
+            { name: "写邀请见面卡片", description: "写入触发契约 + 完整 HTML/CSS/JS + 示例数据并启用。HTML 中必须保留可交互的同意/拒绝 data-meeting-action。", parameterSchema: WRITE_MEETING_INVITE_SCHEMA },
+            { name: "预览邀请见面卡片", description: "在小卷对话中弹窗运行已保存的 HTML 邀请卡片，不离开当前页面。", parameterSchema: PREVIEW_MEETING_INVITE_SCHEMA },
+        ],
+        usageGuide: MEETING_INVITE_PROMPT,
+    },
+    {
         id: "story_scheme_pack",
         label: "剧情方案套件",
         description: "管理**剧情 APP** 的「状态栏方案」与「小剧场方案」：方案保存在公用仓库（所有角色共享），每个角色可单独选择启用哪一套（输出契约 + HTML 渲染 + 示例数据）。状态栏内容进入下一轮上下文，小剧场默认仅展示。只覆盖剧情 APP；线上聊天的状态栏用「线上聊天状态栏套件」。",
@@ -1293,6 +1349,9 @@ const MASCOT_NATIVE_TOOL_NAMES: Record<string, string> = {
     "读取线上状态栏": "mascot_read_status_bar",
     "写线上状态栏": "mascot_write_status_bar",
     "预览线上状态栏": "mascot_preview_status_bar",
+    "读取邀请见面卡片": "mascot_read_meeting_invite_card",
+    "写邀请见面卡片": "mascot_write_meeting_invite_card",
+    "预览邀请见面卡片": "mascot_preview_meeting_invite_card",
     "列出剧情方案": "mascot_list_story_schemes",
     "读取剧情方案": "mascot_read_story_scheme",
     "创建剧情方案": "mascot_create_story_scheme",
@@ -1365,6 +1424,7 @@ const MASCOT_NATIVE_LOADER_NAMES: Record<string, string> = {
     preset_pack: "mascot_load_preset_pack",
     regex_pack: "mascot_load_regex_pack",
     status_bar_pack: "mascot_load_status_bar_pack",
+    meeting_invite_pack: "mascot_load_meeting_invite_pack",
     story_scheme_pack: "mascot_load_story_scheme_pack",
     widget_pack: "mascot_load_widget_pack",
     mixology_pack: "mascot_load_mixology_pack",
@@ -1458,6 +1518,10 @@ export async function executeMascotToolCall(call: ToolCall, ctx: MascotToolConte
             case "读取线上状态栏": return await handleReadStatusBar(call.args, ctx);
             case "写线上状态栏": return await handleWriteStatusBar(call.args, ctx);
             case "预览线上状态栏": return await handlePreviewStatusBar(call.args, ctx);
+            // ─── 全局私聊邀请见面卡片 ───
+            case "读取邀请见面卡片": return await handleReadMeetingInviteCard();
+            case "写邀请见面卡片": return await handleWriteMeetingInviteCard(call.args);
+            case "预览邀请见面卡片": return await handlePreviewMeetingInviteCard();
 
             // ─── 剧情尾部方案（状态栏方案 / 小剧场方案）───
             case "列出剧情方案": return await handleListStorySchemes(call.args, ctx);
@@ -2000,6 +2064,70 @@ async function handlePreviewStatusBar(args: Record<string, unknown>, ctx: Mascot
     });
     if (!handled) return { name: NAME, success: false, error: "预览弹窗当前不可用（桌宠界面未挂载）" };
     return { name: NAME, success: true, data: `已弹出「${displayName}」的状态栏预览，用户可直接查看效果。` };
+}
+
+
+// ── 全局私聊邀请见面卡片 handlers ────────────────────
+
+async function handleReadMeetingInviteCard(): Promise<ToolResult> {
+    const NAME = "读取邀请见面卡片";
+    const { loadChatAppSettings, resolveMeetingInviteCardConfig } = await import("./chat-storage");
+    const cfg = resolveMeetingInviteCardConfig(loadChatAppSettings());
+    return {
+        name: NAME,
+        success: true,
+        data: [
+            `当前模式：${cfg.mode === "custom" ? "自定义 HTML（已启用）" : "Float 默认卡片"}`,
+            "",
+            "【当前触发契约】",
+            cfg.contract.trim() || "（空）",
+            "",
+            "【当前 HTML 渲染】",
+            cfg.renderHtml.trim() || "（空）",
+            "",
+            "【当前示例数据】",
+            cfg.previewRaw.trim() || "（空）",
+        ].join("\n"),
+    };
+}
+
+async function handleWriteMeetingInviteCard(args: Record<string, unknown>): Promise<ToolResult> {
+    const NAME = "写邀请见面卡片";
+    const contract = typeof args.contract === "string" ? args.contract.trim() : "";
+    const renderHtml = typeof args.renderHtml === "string" ? args.renderHtml.trim() : "";
+    const previewRaw = typeof args.previewRaw === "string" ? args.previewRaw.trim() : "";
+    if (!contract) return { name: NAME, success: false, error: "contract 不能为空" };
+    if (!renderHtml) return { name: NAME, success: false, error: "renderHtml 不能为空；邀请卡片支持并需要完整 HTML/CSS/JS" };
+    if (!previewRaw) return { name: NAME, success: false, error: "previewRaw 不能为空，否则无法确认卡片渲染效果" };
+    if (!/data-meeting-action\s*=\s*["']accept["']/i.test(renderHtml)
+        || !/data-meeting-action\s*=\s*["']decline["']/i.test(renderHtml)) {
+        return { name: NAME, success: false, error: "HTML 必须同时包含 data-meeting-action=\"accept\" 与 data-meeting-action=\"decline\"，否则同意/拒绝按钮无法执行" };
+    }
+    const { loadChatAppSettings, saveChatAppSettings } = await import("./chat-storage");
+    saveChatAppSettings({
+        ...loadChatAppSettings(),
+        meetingInviteCard: { mode: "custom", contract, renderHtml, previewRaw },
+    });
+    return {
+        name: NAME,
+        success: true,
+        data: `已保存并启用全局私聊邀请见面卡片（契约 ${contract.length} 字符、HTML 渲染 ${renderHtml.length} 字符）。可在“聊天 → 我的 → 全局聊天信息 → 邀请见面卡片 CSS 样式”继续修改。`,
+    };
+}
+
+async function handlePreviewMeetingInviteCard(): Promise<ToolResult> {
+    const NAME = "预览邀请见面卡片";
+    const { loadChatAppSettings, resolveMeetingInviteCardConfig } = await import("./chat-storage");
+    const cfg = resolveMeetingInviteCardConfig(loadChatAppSettings());
+    if (!cfg.renderHtml.trim()) return { name: NAME, success: false, error: "当前没有邀请卡片 HTML，请先用 写邀请见面卡片 写入" };
+    const { requestMeetingInvitePreview } = await import("./mascot-events");
+    const handled = requestMeetingInvitePreview({
+        displayName: cfg.mode === "custom" ? "当前自定义方案" : "Float 默认方案",
+        renderHtml: cfg.renderHtml,
+        previewRaw: cfg.previewRaw,
+    });
+    if (!handled) return { name: NAME, success: false, error: "预览弹窗当前不可用（桌宠界面未挂载）" };
+    return { name: NAME, success: true, data: "已弹出邀请见面卡片 HTML 预览，示例按钮仅展示样式，不会创建真实剧情。" };
 }
 
 

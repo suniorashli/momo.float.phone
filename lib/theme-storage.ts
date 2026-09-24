@@ -248,7 +248,11 @@ export async function getThemeAssetDataUrl(id: string): Promise<string | null> {
 export async function getThemeAssetMap(ids: string[]): Promise<Record<string, string>> {
   const map: Record<string, string> = {};
   const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
-  const rows = await Promise.all(uniqueIds.map((id) => readAssetRecord(id)));
+  const storedIds = uniqueIds.filter((id) => !/^(?:https?:|data:|blob:)/i.test(id));
+  uniqueIds.forEach((id) => {
+    if (/^(?:https?:|data:|blob:)/i.test(id)) map[id] = id;
+  });
+  const rows = await Promise.all(storedIds.map((id) => readAssetRecord(id)));
   rows.forEach((row) => {
     if (!row) {
       return;

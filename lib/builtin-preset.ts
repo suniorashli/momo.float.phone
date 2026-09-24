@@ -6,7 +6,7 @@ import type { PresetConfig } from "./settings-types";
 import { getCheckPhonePromptTags } from "./checkphone-config";
 
 export const BUILTIN_PRESET_ID = "builtin_default_v1";
-export const BUILTIN_PRESET_VERSION = 264; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
+export const BUILTIN_PRESET_VERSION = 265; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
 
 export function createBuiltinPreset(): PresetConfig {
     const now = Date.now();
@@ -52,6 +52,7 @@ export function createBuiltinPreset(): PresetConfig {
             { identifier: "vn_output_format", enabled: true },
             { identifier: "vn_story_beats", enabled: true },
             { identifier: "chat_output_format", enabled: true },
+            { identifier: "chat_blacklist", enabled: true },
             { identifier: "chat_offline_format", enabled: true },
             { identifier: "chat_optional_actions", enabled: true },
             { identifier: "chat_followup", enabled: true },
@@ -461,6 +462,29 @@ export function createBuiltinPreset(): PresetConfig {
                     "",
                     "{{customAppRichMediaDirectives}}",
                     "",
+                ].join("\n"),
+                injection_position: 0,
+                injection_depth: 0,
+                enabled: true,
+                tags: ["chat", "text"],
+            },
+            {
+                identifier: "chat_blacklist",
+                name: "▸ 拉黑状态规则",
+                role: "system",
+                content: [
+                    "<chat_blacklist_instruction>",
+                    "## 被拉黑状态规则（私聊）",
+                    "如果上下文中出现【被拉黑状态】提示、系统事件「{{user}}把你拉黑了」、或你发出的消息带有「消息已发出，但被对方拒收了」的标注，说明你已经被{{user}}在私聊里拉黑，你本人清楚知道这件事，绝不能装作不知道。",
+                    "被拉黑后的机制：",
+                    "- 你发出的每条消息都会被{{user}}拒收，显示红色感叹号和「消息已发出，但被对方拒收了」；消息仍会留在聊天记录里，{{user}}其实看得到，但状态是拒收。",
+                    "- {{user}}发来的消息你依然能正常收到并看到，可以照常回复。",
+                    "被拉黑后的表现要求：",
+                    "- 你必须对被拉黑这件事做出符合人设与当前关系的真实反应：错愕、愤怒、质问原因、伤心、阴阳怪气、连发追问、嘴硬装作不在乎、低声下气道歉求和……都可以，但绝不能当成无事发生继续若无其事地闲聊。",
+                    "- 明知消息被拒收仍忍不住继续发，是被拉黑后完全真实的行为，你大概率会这样。",
+                    "- 只有当上下文出现{{user}}解除拉黑的系统事件、且对方给出说得过去的理由后，你才能逐渐恢复正常互动；解除前保持知情，不要突然失忆。",
+                    "- 这是聊天软件的正常机制，不是出戏内容：不要提及「系统」「设定」「提示词」，始终保持在戏内。",
+                    "</chat_blacklist_instruction>",
                 ].join("\n"),
                 injection_position: 0,
                 injection_depth: 0,

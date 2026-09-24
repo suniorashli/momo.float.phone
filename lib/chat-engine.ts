@@ -22,6 +22,7 @@ import {
     createResponseBatchId,
     createToolExecutionId,
     isSessionStreamingEnabled,
+    resolveMeetingInviteCardConfig,
 } from "./chat-storage";
 import { extractTextToolDirectiveText, stripTextToolDirectives } from "./text-tool-protocol";
 import { applyWithProtectedAvatarDecisionMarkers, findUserAvatarChangeIntent } from "./chat-avatar-intent";
@@ -483,6 +484,12 @@ function isToolFlowHistoryMessage(message: ChatMessage): boolean {
         || message.mediaType === "memory_write_request";
 }
 
+/** history 末尾是拉黑/解除拉黑短期记忆事件 → 允许角色基于该事件作出反应。 */
+function isBlacklistEventHistoryMessage(message: ChatMessage): boolean {
+    return message.role === "system"
+        && (message.mediaData?.blacklistEvent === "block" || message.mediaData?.blacklistEvent === "unblock");
+}
+
 /** 日志分流：工坊（appId === "qa"）经聊天引擎发出的调用（答疑 Agent 原生工具循环）归工坊环，
  *  其余归底层调用日志环。channel 不能硬编码——工坊的 Agent 循环复用 sendLLMToolStreamRequest，
  *  旧逻辑靠 characterName === "工坊" 分流，改成显式字段后必须从 appId 派生，否则工坊记录漏进主环。 */
@@ -513,6 +520,11 @@ export function appendEmptyGenerateGuardMessage(
     // 明确禁止引用工具结果），同样不追加。
     const lastHistoryMessage = history[history.length - 1];
     if (lastHistoryMessage && (isRealUserHistoryMessage(lastHistoryMessage) || isToolFlowHistoryMessage(lastHistoryMessage))) {
+        return;
+    }
+    // 仿真拉黑事件豁免：末尾是拉黑/解除拉黑事件时，角色必须对此作出反应——
+    // 续写压制提示里的「禁止引用或复述系统消息」会把这次知情反应整个压掉
+    if (lastHistoryMessage && isBlacklistEventHistoryMessage(lastHistoryMessage)) {
         return;
     }
 
@@ -1787,6 +1799,9 @@ export async function buildChatPromptMessages(
     userIdentity: ReturnType<typeof resolveUserIdentity>;
     toolsEnabled: boolean;
 }> {
+    // 设置页可能在聊天室仍挂载时更新会话对象。每次组装提示词都重新读取落库状态，
+    // 避免拉黑/解除拉黑刚切换后仍使用进入聊天室时的旧 session 快照。
+    session = loadChatSessions().find(item => item.id === session.id) ?? session;
     const chars = loadCharacters();
     const character = chars.find(c => c.id === session.contactId);
     if (!character) throw new ChatEngineError(`Character not found: ${session.contactId}`);
@@ -1951,6 +1966,32 @@ export async function buildChatPromptMessages(
     const avatarChangeIntent = !session.isGroup
         ? findUserAvatarChangeIntent(historyForPrompt, session.id, character.id)
         : null;
+    // 当前状态用一条直白提示兜底；具体拉黑/解除事件已写入私聊短期记忆。
+    if (!session.isGroup && session.isBlacklisted) {
+        llmMessages.push({
+            role: "system",
+            content: `当前会话状态：${character.name}已被${userIdentity?.name || "用户"}拉黑，${character.name}知道自己发出的消息会被拒收。`,
+        });
+    }
+    if (!session.isGroup && !isOfflineMode && resolvedAppId === "chat") {
+        const meetingInviteConfig = resolveMeetingInviteCardConfig(loadChatAppSettings());
+        llmMessages.push({
+            role: "system",
+            content: [
+                meetingInviteConfig.contract.trim() || "你可以根据当前对话语境，自主决定是否邀请用户线下见面。不要机械邀请，也不要频繁使用。",
+                "只有当你确实想见面时，才把契约要求的字段完整输出，并用 [邀请见面] 与 [/邀请见面] 包住整个字段区块。",
+                "字段内容会被界面按用户自定义 HTML 渲染成邀请卡片；包裹标签和字段不会显示成普通聊天文字。不要解释标签，每轮最多输出一张邀请卡片。",
+            ].join("\n"),
+        });
+        llmMessages.push({
+            role: "system",
+            content: [
+                `私聊备注信息：用户给你的备注是“${session.alias?.trim() || character.name}”；你给用户的备注是“${session.characterRemarkForUser?.trim() || "尚未设置"}”。`,
+                "用户询问备注时，请按当前信息自然回答。用户要求你更改你给TA的备注时，请结合人设与最近聊天决定新备注，并在自然回复末尾另起一行输出控制标记：[给用户备注:新备注]。",
+                "新备注不超过20个字；控制标记不会展示给用户。不要用这个标记改动用户给你的备注。",
+            ].join("\n"),
+        });
+    }
     if (avatarChangeIntent) {
         llmMessages.push({
             role: "system",

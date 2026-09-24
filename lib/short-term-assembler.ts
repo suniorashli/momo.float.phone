@@ -3,7 +3,7 @@
 // a unified timeline. Replaces the old ShortTermEvent IndexedDB approach.
 // Used by: memory-bank-page (UI display), memory-summarizer (summarization input).
 
-import { isReadingDiscussMessage, isSystemInstructionMessage, loadChatSessions, loadChatMessages, type ChatMessage } from "./chat-storage";
+import { getSystemInstructionPromptContent, isReadingDiscussMessage, isSystemInstructionMessage, loadChatSessions, loadChatMessages, type ChatMessage } from "./chat-storage";
 import { buildGroupAdminBracketText } from "./group-admin";
 import { loadMomentPosts, loadMomentComments } from "./moments-storage";
 import { loadCharacters } from "./character-storage";
@@ -288,12 +288,15 @@ export function loadNativeTimeline(
                 if (msg.mediaType === "tool_notice") continue;
                 if (msg.mediaType === "memory_write_request") continue;
                 if (isSystemInstructionMessage(msg)) {
+                    const instructionContent = getSystemInstructionPromptContent(msg.content || "");
                     entries.push({
                         id: msg.id,
                         sourceApp: "chat",
-                        sourceDetail: "system",
+                        // 内部备注/头像等事件明确进入私聊短期记忆；普通手动系统指令
+                        // 仍保留 system 分类，避免改变已有记忆行为。
+                        sourceDetail: msg.mediaData?.shortTermMemoryEvent ? "direct" : "system",
                         timestamp: msg.createdAt,
-                        content: `${msgLabel} [系统指令] ${msg.content || ""}`,
+                        content: `${msgLabel} ${msg.mediaData?.shortTermMemoryEvent ? "[私聊事件]" : "[系统指令]"} ${instructionContent}`,
                     });
                     continue;
                 }
@@ -928,6 +931,8 @@ export function prepareShortTermContext(
         excludeOfflineSessionId?: string;
         includeNativeToolHistory?: boolean;
         includeDirectChatEntries?: boolean;
+        /** 只读取该时间之后的跨应用最近事件；剧情分线用它隔离创建前的短期记忆。 */
+        afterTimestamp?: string;
         timeAware?: boolean;
         promptTimestampOptions?: PromptTimestampOptions;
     },
@@ -942,6 +947,7 @@ export function prepareShortTermContext(
         userName: options?.userName,
         appId: appId as import("./settings-types").ContentAppId,
         excludeOfflineSessionId: options?.excludeOfflineSessionId,
+        afterTimestamp: options?.afterTimestamp,
         timeAware,
         promptTimestampOptions: options?.promptTimestampOptions,
     });

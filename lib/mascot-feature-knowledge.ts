@@ -23,8 +23,8 @@ type MascotFeatureKnowledgeRecord = {
 
 const OWNER_FEATURES: MascotFeatureKnowledgeRecord = {
     key: OWNER_FEATURES_KEY,
-    revision: "2026-09-12.5",
-    updatedAt: "2026-09-12T00:00:00.000Z",
+    revision: "2026-09-22.1",
+    updatedAt: "2026-09-22T00:00:00.000Z",
     entries: [
         {
             id: "theme-presets",
@@ -137,6 +137,34 @@ const OWNER_FEATURES: MascotFeatureKnowledgeRecord = {
                 "小剧场方案让 AI 在 <story_theater> 标签里写一段不影响主线的加演短文，默认仅展示、不进入上下文。",
                 "渲染画布在沙盒 iframe 里运行，通过 window.STORY_RAW 或 {{RAW}} 读取输出原文；小剧场额外有 window.THEATER_RAW。",
                 "小卷可以通过「剧情方案套件」列出、读取、创建、更新、删除这些方案；线上聊天的状态栏走「线上聊天状态栏套件」，两者不要混。",
+            ],
+        },
+        {
+            id: "meeting-invite-card",
+            title: "邀请见面卡片 HTML 自定义",
+            location: "聊天 → 我的 → 全局聊天信息 → 邀请见面卡片 CSS 样式",
+            facts: [
+                "邀请见面卡片支持完整 HTML/CSS/JS，不只是 CSS；可编辑角色邀请触发契约、输出渲染和预览示例数据。",
+                "HTML 通过 window.STATUS_RAW 或 {{RAW}} 读取邀请人、标题、说明和状态；同意/拒绝按钮必须分别使用 data-meeting-action=accept 与 data-meeting-action=decline 才能真实交互。",
+                "小卷可通过「邀请见面卡片套件」读取、写入并弹窗预览这份全局私聊方案；保存后所有私聊共用。",
+            ],
+        },
+        {
+            id: "story-custom-font",
+            title: "剧情自定义字体",
+            location: "剧情 App → 右上角设置 → 自定义字体",
+            facts: [
+                "可为当前剧情会话上传 TTF、OTF、WOFF、WOFF2 字体文件，也可填写以 http/https 开头的字体直链。",
+                "字体会作用于剧情正文、目录、设置和输入区；远程字体如果不允许跨域，浏览器会自动回退到默认剧情字体。",
+            ],
+        },
+        {
+            id: "appearance-icon-url",
+            title: "外观 App 图标 URL",
+            location: "外观 App → Icons",
+            facts: [
+                "每个内置 App 与自定义 App 图标下面都有独立图床 URL 输入框，填写直链后点“应用 URL”即可替换该图标。",
+                "也仍可直接点击图标从相册上传；清空 URL 并应用或点图标上的还原按钮会恢复默认图标。",
             ],
         },
         {

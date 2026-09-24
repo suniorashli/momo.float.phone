@@ -47,30 +47,47 @@ export async function initChatDb(): Promise<{
     const alreadyMigrated = window.localStorage.getItem(LS_MIGRATED_FLAG);
 
     if (!alreadyMigrated) {
-        // Guard against a lost migration flag while IndexedDB still holds data.
-        // The flag lives in volatile localStorage; the actual data lives in the far
-        // more durable IndexedDB. The flag can disappear independently of the data
-        // (e.g. clearing the "cache" data module, privacy tooling, partial eviction).
-        // If we blindly "re-migrated" from now-empty localStorage we would shadow
-        // real data with empty caches, and the next write would wipe IndexedDB.
-        // So when IDB already has data, treat it as already migrated and reuse it.
+        // ── 防误清防线 ──────────────────────────────────────────
+        // 迁移标记在易失的 localStorage，真实数据在更持久的 IndexedDB。标记可能
+        // 单独消失（清「缓存」、隐私工具、配额逐出）。这里任何一步出错（包括
+        // localStorage 配额满导致 setItem 抛错）都绝不允许落入下方「全新安装」的
+        // 迁移分支——那个分支会把空的 localStorage 当成真数据返回并删掉旧键，
+        // 水合后的第一次全量保存（dbReplaceSessions = clear + put）就会把
+        // IndexedDB 里的真实会话/联系人整表清掉，也就是「小手机全部变成初始
+        // 状态」的事故。
+        let indexedDbHasData = false;
         try {
             const existingCount =
                 (await chatDb.messages.count()) +
                 (await chatDb.sessions.count()) +
                 (await chatDb.contacts.count());
-            if (existingCount > 0) {
-                window.localStorage.setItem(LS_MIGRATED_FLAG, "1");
-                const [messages, sessions, contacts] = await Promise.all([
-                    chatDb.messages.toArray(),
-                    chatDb.sessions.toArray(),
-                    chatDb.contacts.toArray(),
-                ]);
-                console.log(`[ChatDB] Migration flag missing but IndexedDB has data; reusing it: ${messages.length} messages, ${sessions.length} sessions, ${contacts.length} contacts`);
-                return { messages, sessions, contacts };
-            }
+            indexedDbHasData = existingCount > 0;
         } catch (err) {
-            console.warn("[ChatDB] Pre-migration IndexedDB check failed:", err);
+            // 探测失败（被占用/配额/瞬时错误）≠ 空库：改走带重试的 IndexedDB
+            // 直读；仍失败就抛错保持「未水合」状态——所有写路径会自动退化为
+            // 只增不改（见 chat-storage.ts），宁可见空也不能用空数据覆盖真库。
+            console.warn("[ChatDB] Pre-migration IndexedDB check failed; recovering directly:", err);
+            const recovered = await loadFromIndexedDbWithRetries();
+            if (recovered) {
+                markMigrated();
+                return recovered;
+            }
+            throw new Error(`[ChatDB] 无法读取本地聊天数据库（${
+                err instanceof Error ? err.message : String(err)
+            }），已保持未水合状态以避免覆盖真实数据`);
+        }
+
+        if (indexedDbHasData) {
+            const [messages, sessions, contacts] = await Promise.all([
+                chatDb.messages.toArray(),
+                chatDb.sessions.toArray(),
+                chatDb.contacts.toArray(),
+            ]);
+            // 标记写失败（localStorage 配额满）只是性能问题，绝不能连带
+            // 丢弃已读出的 IndexedDB 数据。
+            markMigrated();
+            console.log(`[ChatDB] Migration flag missing but IndexedDB has data; reusing it: ${messages.length} messages, ${sessions.length} sessions, ${contacts.length} contacts`);
+            return { messages, sessions, contacts };
         }
 
         // First run after migration: move localStorage data → IndexedDB
@@ -112,7 +129,29 @@ export async function initChatDb(): Promise<{
         }
     }
 
-    // Already migrated: load from IndexedDB (retry up to 3 times on failure)
+    // Already migrated: load from IndexedDB (with retries)
+    const loaded = await loadFromIndexedDbWithRetries();
+    if (!loaded) {
+        throw new Error("[ChatDB] Failed to load after 3 attempts");
+    }
+    return loaded;
+}
+
+/** 写迁移标记；失败（如 localStorage 配额满）只是性能问题，不应升级成数据事故。 */
+function markMigrated(): void {
+    try {
+        window.localStorage.setItem(LS_MIGRATED_FLAG, "1");
+    } catch (err) {
+        console.warn("[ChatDB] Failed to persist migration flag:", err);
+    }
+}
+
+/** 从 IndexedDB 读取全部数据，失败重试最多 3 次；全部失败返回 null（由调用方决定是否抛错）。 */
+async function loadFromIndexedDbWithRetries(): Promise<{
+    messages: ChatMessage[];
+    sessions: ChatSession[];
+    contacts: ChatContact[];
+} | null> {
     let lastErr: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -133,7 +172,7 @@ export async function initChatDb(): Promise<{
         }
     }
     console.error("[ChatDB] All load attempts failed:", lastErr);
-    throw new Error("[ChatDB] Failed to load after 3 attempts");
+    return null;
 }
 
 function safeParse<T>(raw: string | null): T[] {
@@ -148,6 +187,17 @@ export function dbPutMessage(msg: ChatMessage): void {
 
 export function dbPutMessages(msgs: ChatMessage[]): void {
     chatDb.messages.bulkPut(msgs).catch(err => console.warn("[ChatDB] bulkPut messages failed:", err));
+}
+
+// 可等待、错误上抛、分块提交的批量写入。导入聊天记录这类大批量落库必须
+// 感知真实结果（配额满/写入失败要能反馈给用户），且分块避免巨型单事务
+// 卡死主线程；每块之间自然让出事件循环，页面保持可响应。
+const DB_BULK_PUT_CHUNK = 2000;
+export async function dbBulkPutMessages(msgs: ChatMessage[]): Promise<void> {
+    if (msgs.length === 0) return;
+    for (let start = 0; start < msgs.length; start += DB_BULK_PUT_CHUNK) {
+        await chatDb.messages.bulkPut(msgs.slice(start, start + DB_BULK_PUT_CHUNK));
+    }
 }
 
 export function dbDeleteMessage(id: string): void {

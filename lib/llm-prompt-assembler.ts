@@ -1013,6 +1013,13 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
                 }
             }
 
+            // 仿真拉黑：被用户拒收的角色消息在提示词历史里显式标注，
+            // 模型每轮都能看到自己消息被拒收的直接证据，持续保持被拉黑的知情状态
+            if (msg.role === "assistant" && msg.status === "rejected") {
+                const rejectedMark = "[系统标注：这条消息已发出，但被对方拒收了]";
+                body = body.trim() ? `${body}\n${rejectedMark}` : rejectedMark;
+            }
+
             if (!body.trim() && !imageUrl) return;
             const isAssistantImage = imageUrl && msg.role === "assistant" && msg.mediaType === "media_file";
             const text = isAssistantImage

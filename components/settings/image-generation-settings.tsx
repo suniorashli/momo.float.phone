@@ -372,7 +372,6 @@ export function ImageGenerationSettings() {
                     assetId,
                     updatedAt: Date.now(),
                     enabled: true,
-                    selfieOnly: current?.selfieOnly !== false,
                     faceCrop,
                 },
             },
@@ -1114,19 +1113,21 @@ export function ImageGenerationSettings() {
                             <span className="menu-desc ml-1">生成该角色图片时自动追加，OpenAI 与 NovelAI 均生效。</span>
                         </div>
 
-                        <div className="menu-item !px-0 !py-0">
-                            <span className="settings-tools-menu-copy">
-                                <span className="menu-label appearance-menu-item-label">非自拍照不使用参考图</span>
-                                <span className="menu-desc settings-tools-menu-desc">默认开启；合照、他拍、风景或物件图仅使用文字特征。</span>
-                            </span>
-                            <span className="menu-right settings-tools-menu-toggle">
-                                <Toggle
-                                    checked={selectedReference?.selfieOnly !== false}
-                                    onChange={(selfieOnly) => updateCharacterReference(selectedCharacter.id, { selfieOnly })}
-                                    className="settings-toggle-control"
-                                />
-                            </span>
-                        </div>
+                        {settings.provider === "novelai" && (
+                            <div className="menu-item !px-0 !py-0">
+                                <span className="settings-tools-menu-copy">
+                                    <span className="menu-label appearance-menu-item-label">NovelAI 使用人物专属提示词</span>
+                                    <span className="menu-desc settings-tools-menu-desc">关闭后 NAI 只使用当前画面描述与预设，不追加上方人物特征。</span>
+                                </span>
+                                <span className="menu-right settings-tools-menu-toggle">
+                                    <Toggle
+                                        checked={selectedReference?.novelAiFeaturePromptEnabled !== false}
+                                        onChange={(novelAiFeaturePromptEnabled) => updateCharacterReference(selectedCharacter.id, { novelAiFeaturePromptEnabled })}
+                                        className="settings-toggle-control"
+                                    />
+                                </span>
+                            </div>
+                        )}
 
                         {settings.provider !== "novelai" && (
                             <div className="flex gap-2">
