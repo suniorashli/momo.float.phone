@@ -276,8 +276,8 @@ export async function extractInvestigatorLines(
       }
       if (!ho) continue;
       const introBlock = f["导入剧情"] || "";
-      const occupationBlock = occupation.trim() || undefined;
-      const introPlaceBlock = introPlace.trim() || undefined;
+      const occupationBlock = (f["职业"] || "").trim() || undefined;
+      const introPlaceBlock = (f["开场地点"] || "").trim() || undefined;
       const relations = Object.keys(f)
         .filter(k => /^关系\d*$/.test(k))
         .map(k => f[k] || "")

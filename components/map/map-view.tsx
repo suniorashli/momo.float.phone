@@ -325,10 +325,18 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
       // Player persona first → the review modal IS your card being handed over
       try {
         // Fork: HO occupation requirement — the player's assigned line dictates their job
-        const myHoOcc = save.boundLineHo?.["__player__"]
-          ? save.investigatorLines?.find(l => l.ho === save.boundLineHo["__player__"])?.occupation
+        // Fork fix: pass the FULL line text so the persona card is written from the HO's
+        // own story (family, relations, pre-story), not a follower-of-HO perspective
+        const myLineObj = save.boundLineHo?.["__player__"]
+          ? save.investigatorLines?.find(l => l.ho === save.boundLineHo["__player__"])
           : undefined;
-        const persona = await importInvestigator(myName, `（用户本人）${introSource}`, skeleton, save.mySecret, apiConfig, myHoOcc);
+        const myHoOcc = myLineObj?.occupation;
+        const myHoFull = myLineObj ? [
+          `HO代号：${myLineObj.ho}${myLineObj.occupation ? ` · 职业：${myLineObj.occupation}` : ""}`,
+          myLineObj.introStory ? `导入剧情：${myLineObj.introStory}` : "",
+          myLineObj.relations.length ? `私人关系：${myLineObj.relations.map(r => `${r.npc}（${r.relation}）`).join("；")}` : "",
+        ].filter(Boolean).join("\n") : undefined;
+        const persona = await importInvestigator(myName, `（用户本人）${introSource}`, skeleton, save.mySecret, apiConfig, myHoOcc, myHoFull);
         if (!cancelled && persona) {
           persistSave({ ...saveRef.current, myPersona: { ...persona, confirmed: false } });
           pushMessages({ id: mkId(), type: "system", text: "📇 KP 将一张身份卡推到你面前——请过目（弹窗已打开，可修改后确认）" });
@@ -2635,7 +2643,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
               <span style={{ fontSize: "calc(14px*var(--app-text-scale,1))" }}>🔄</span> 重新生成（原操作）
             </button>
           )}
-          {inEvent && !freeMode && currentChoices && currentChoices.length > 0 && (
+          {false && inEvent && !freeMode && currentChoices && currentChoices.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 5, maxHeight: "32vh", overflowY: "auto" }}>
               {currentChoices.map((choice, i) => {
                 const missingItem = choice.requires && !save.director.keyItems.includes(choice.requires);

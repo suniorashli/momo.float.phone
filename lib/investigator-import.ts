@@ -36,6 +36,21 @@ const PROMPT_HO_BLOCK = `
 TA的HO职业要求：「{ho_occupation}」。
 【职业铁律】[时代职业]必须就是「{ho_occupation}」（可按时代微调措辞，如"搞笑艺人"在不同时代可为"宫廷俳优/杂耍艺人/喜剧演员"，但职业内核不得更换）。角色卡原职业作废，[身份背景]要能解释TA为何从事这个职业并与HO导入剧情衔接。[技能模板]从候选中选与该职业最接近的。`;
 
+// Fork fix: PLAYER version — the user IS this HO, not a follower of one. The persona card
+// must be written first-person from the HO's own car-card: their family, their relations,
+// their pre-story. Nothing about "随HO行动" — the HO line IS their identity.
+const PROMPT_PLAYER_HO_BLOCK = `
+
+补充：这是玩家本人的调查员身份卡，TA扮演的HO车卡全文如下（这是TA的身份蓝本，不是别人的故事）：
+---
+{ho_full_line}
+---
+【身份铁律】
+- 这就是"你"的设定：[身份背景]用第二人称写"你"的来历——直接采用车卡里的事实（家人、师承、关系人、经历），禁止改写车卡既定事实
+- [时代职业]必须就是车卡规定的职业「{ho_occupation}」，一字不差（"落语/搞笑艺人"就写"落语师/搞笑艺人"，不许译成脱口秀、旅行博主之类的现代近似物）
+- 角色卡只提供说话方式与语气——你是"这个人"，不是"扮演这个人的人"
+- [背景钩子]从车卡的导入剧情里取：你眼下正面对的那件事`;
+
 /** Adapt one companion's persona to the module. Returns null on failure (caller falls back to raw card). */
 export async function importInvestigator(
   characterName: string,
@@ -44,12 +59,15 @@ export async function importInvestigator(
   secret?: PersonalSecret,
   apiConfig: ApiConfig,
   hoOccupation?: string,
+  hoFullLine?: string,          // Fork fix: player version — the HO car-card text (intro+relations)
 ): Promise<InvestigatorPersona | null> {
   const eraGuess = skeleton.world.lore.slice(0, 120) || skeleton.world.name;
   const occPool = OCCUPATIONS.map(o => o.name).join("/");
   let prompt = IMPORT_PROMPT.replace("{occ_pool}", occPool);
   if (hoOccupation?.trim()) {
-    prompt += PROMPT_HO_BLOCK.split("{ho_occupation}").join(hoOccupation.trim());
+    prompt += (hoFullLine?.trim()
+      ? PROMPT_PLAYER_HO_BLOCK.split("{ho_full_line}").join(hoFullLine.trim()).split("{ho_occupation}").join(hoOccupation.trim())
+      : PROMPT_HO_BLOCK.split("{ho_occupation}").join(hoOccupation.trim()));
   }
   if (secret) {
     prompt += PROMPT_SECRET_BLOCK.replace("{secret}", secret.content).replace("{link}", secret.link || "未注明");

@@ -902,7 +902,7 @@ export const DEFAULT_DM_SCENE_PROMPT = `你是COC跑团的守秘人（KP）。�
 - 每个场景至少做一件推进剧情的事：给一条线索/引导玩家去下一个关键地点/让NPC暗示某个伏笔/揭示一个秘密
 - 剧情前进靠叙述里埋的可疑细节与 hints 的方向暗示驱动，不靠选项
 - 不要让玩家在同一个地方原地转圈——如果当前地点的调查已经完成，暗示他们该去哪里
-【选项纪律·防剧透·核心】choices 数组通常留空 []；至多 1-2 个，且只能是"移动/离开/原地等待/撤退"这类元动作。禁止把调查/询问/搜查/检定做成选项——那是调查员自己宣言的事。禁止在选项文本中出现叙述里没写过的人名、物品名、地点名（玩家还没见到的东西出现在选项里=剧透）。你的引导职责全部由 hints 承担
+【选项纪律·防剧透·核心】choices 数组一律留空 []。绝不输出任何选项——玩家完全通过自由宣言行动（说+做+检定），你的引导职责全部由 hints 承担（hints 指向哪里值得留意，玩家自己决定宣言什么）。禁止把任何行动做成选项
 
 【密档划账·防遗忘】
 - 每轮输出 revealed 数组：把本轮你在叙述/NPC台词/私聊幕中**实际公开**的密档条目逐字摘录进去（来源：[密档]的真相/NPC秘密/伏笔/反转、[调查员秘密]、[调查员密档线]的事件）
@@ -1268,10 +1268,7 @@ SAN：理智值（0-99）。目睹恐怖、阅读禁书、直面神话存在都�
 - 大失败：严重后果——重伤（扣大量HP）、物品损坏、触发危险或惊惧（额外扣SAN）
 【重要】属性检定时，系统会随机选队伍中一个人掷骰，结果代表整个队伍的判定。根据掷骰结果（成功/失败/大成功/大失败）描述该行动对所有人的影响。
 
-选项设计（防剧透纪律）：
-- choices 通常留空 []；至多 1-2 个，只能是"移动/离开/原地等待/撤退"类元动作
-- 禁止把调查/询问/搜查/检定做成选项；禁止在选项文本中出现叙述里没出现过的人名/物品名/地点名
-- 偶尔确需检定型选项时（如岔路口的回避判定）才用 stat_check，如{"stat":"侦查"}；COC技能名会自动换算到对应属性；requires 物品同样只能是叙述里出现过/队伍已持有的东西
+选项：choices 一律留空 []——绝不输出任何选项（玩家全靠自由宣言行动；引导全部交给 hints 与叙述里的可疑细节）
 journal字段：用第三人称记录（用 {{user}} 而不是"我"或"你"）。
 日志：${truncateByTokenBudget(ctx.recentJournal, tokenConfig.journalTokenBudget).join("；")}
 ${ctx.previousDialogue ? `\n对话历史：\n${truncateByTokenBudget(ctx.previousDialogue.split("\n"), tokenConfig.dialogueTokenBudget).join("\n")}` : ""}
@@ -1310,27 +1307,9 @@ export async function dmScene(ctx: DMContext, apiConfig: ApiConfig): Promise<DMS
       speaker: d.speaker || "NPC", text: d.text || "",
     })),
     situation: p.situation || "",
-    choices: (p.choices || [])
-      // Fork: anti-spoiler filter — drop choices naming people/items/places absent from narration & NPC lines
-      .filter((c: Record<string, unknown>) => {
-        const label = String(c.label || "");
-        if (!label) return false;
-        const known = `${p.narration || ""}\n${(p.npc_lines || []).map((d: Record<string, string>) => `${d.speaker || ""}${d.text || ""}`).join("\n")}\n你|{{user}}|移动|离开|原地|等待|撤退|搜查周围|搜索|休息|扎营`;
-        // Chinese names (2-4 chars, no punctuation) & quoted items — verify they were mentioned
-        const suspects = label.match(/[一-龥]{2,4}(?=的|在|去|问|找|看|翻|查)/g) || [];
-        const items = label.match(/[「“]([^」”]+)[」”]/g) || [];
-        for (const s of [...suspects, ...items.map(i => i.slice(1, -1))]) {
-          if (s && !known.includes(s)) return false;
-        }
-        return true;
-      })
-      .map((c: Record<string, unknown>) => ({
-      label: (c.label as string) || "",
-      ...(c.stat_check || c.statCheck ? {
-        statCheck: (c.stat_check || c.statCheck) as { stat: string; who?: string },
-      } : {}),
-      ...(c.requires ? { requires: c.requires as string } : {}),
-      })),
+    // Fork fix: choices are BANNED entirely — free declaration only. Whatever the model
+    // outputs here is dropped; hints/topics carry the guidance instead.
+    choices: [],
     journal: p.journal || p.journal_entry || "",
     gained: p.gained || p.items_gained || [],
     lost: p.lost || p.items_lost || [],
@@ -1719,7 +1698,7 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是COC跑团的守秘人（KP）。
 2. NPC对所有角色的回应（有人说话了就要回应）
 3. 角色之间的互动呼应
 4. 推进主线调查（不要让剧情停滞！但也不要替用户做决定，必须尊重用户决策！）
-5. 给出推动故事前进的选项
+5. choices 数组一律留空 []——绝不输出任何选项，玩家完全用自由宣言行动；你的引导通过叙述里的可疑细节与 hints 完成
 
 注意：每个角色的宣言只是"意图"，实际结果由你裁定。你要把所有人的行动编织成一段连贯的叙事。
 
@@ -1735,7 +1714,7 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是COC跑团的守秘人（KP）。
 - 看[进展]判断节奏：前期多埋伏笔、中期触发反转升级冲突、后期收束走向结局
 - 裁定结果要有后果——选择和行动应该影响后续剧情走向，不要每次都"安全度过"
 - advance=true：在完成主线阶段的关键事件时设为true（获得关键线索/揭示重大真相/逃出险境）
-- 选项设计：至少一个选项与主线相关，引导玩家前往下一个关键地点或面对关键抉择
+- 不输出任何选项（choices 恒为 []）；引导玩家的职责由叙述里的可疑细节与 hints 完成
 
 【位置更新】move_to字段：
 - 全员一起移动 → 字符串："图书馆"
@@ -1773,7 +1752,7 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是COC跑团的守秘人（KP）。
 【完结判定】当你觉得故事已经完美收束时，设ending:true。不要在剧情高潮时突然结束，要让故事自然落幕。
 
 只输出JSON：
-{"narration":"火光在墙上跳了两下，照得每个人的神情都忽明忽暗。\\n\\n队伍各自的行动在同一刻撞在一起，让原本僵持的局势突然松动。\\n\\n门外传来的脚步声，说明新的变化已经逼近。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"新局势描述","choices":[{"label":"小心地调查声音来源","stat_check":{"stat":"聆听"}},{"label":"{{user}}镇定地与警察周旋","stat_check":{"stat":"话术","who":"{{user}}"}},{"label":"直接离开"}],"journal":"日志","gained":["获得物品"],"lost":["失去物品或SAN-3"],"clues":["新获得的关键线索"],"revealed":["本轮公开的密档条目原文（逐字摘录；无则留空[]）"],"topics":[],"investigation_done":false,"intro_done":false,"side_scenes":[],"advance":false,"ending":false,"move_to":"节点名 或 {\"{{user}}\":\"节点名\",\"角色名\":\"节点名\"}","world_events":["世界各处事件"]}`;
+{"narration":"火光在墙上跳了两下，照得每个人的神情都忽明忽暗。\\n\\n队伍各自的行动在同一刻撞在一起，让原本僵持的局势突然松动。\\n\\n门外传来的脚步声，说明新的变化已经逼近。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"新局势描述","choices":[],"journal":"日志","gained":["获得物品"],"lost":["失去物品或SAN-3"],"clues":["新获得的关键线索"],"revealed":["本轮公开的密档条目原文（逐字摘录；无则留空[]）"],"topics":[],"investigation_done":false,"intro_done":false,"side_scenes":[],"advance":false,"ending":false,"move_to":"节点名 或 {\"{{user}}\":\"节点名\",\"角色名\":\"节点名\"}","world_events":["世界各处事件"]}`;
 
 async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneResult> {
   const userMsg = buildDMUserMsg(ctx);
@@ -1806,27 +1785,8 @@ async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneR
       speaker: d.speaker || "NPC", text: d.text || "",
     })),
     situation: p.situation || "",
-    choices: (p.choices || [])
-      // Fork: anti-spoiler filter — drop choices naming people/items/places absent from narration & NPC lines
-      .filter((c: Record<string, unknown>) => {
-        const label = String(c.label || "");
-        if (!label) return false;
-        const known = `${p.narration || ""}\n${(p.npc_lines || []).map((d: Record<string, string>) => `${d.speaker || ""}${d.text || ""}`).join("\n")}\n你|{{user}}|移动|离开|原地|等待|撤退|搜查周围|搜索|休息|扎营`;
-        // Chinese names (2-4 chars, no punctuation) & quoted items — verify they were mentioned
-        const suspects = label.match(/[一-龥]{2,4}(?=的|在|去|问|找|看|翻|查)/g) || [];
-        const items = label.match(/[「“]([^」”]+)[」”]/g) || [];
-        for (const s of [...suspects, ...items.map(i => i.slice(1, -1))]) {
-          if (s && !known.includes(s)) return false;
-        }
-        return true;
-      })
-      .map((c: Record<string, unknown>) => ({
-      label: (c.label as string) || "",
-      ...(c.stat_check || c.statCheck ? {
-        statCheck: (c.stat_check || c.statCheck) as { stat: string; who?: string },
-      } : {}),
-      ...(c.requires ? { requires: c.requires as string } : {}),
-      })),
+    // Fork fix: choices BANNED — free declaration only (resolve path)
+    choices: [],
     journal: p.journal || p.journal_entry || "",
     gained: p.gained || p.items_gained || [],
     lost: p.lost || p.items_lost || [],
