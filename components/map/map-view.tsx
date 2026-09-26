@@ -336,7 +336,7 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
           myLineObj.introStory ? `导入剧情：${myLineObj.introStory}` : "",
           myLineObj.relations.length ? `私人关系：${myLineObj.relations.map(r => `${r.npc}（${r.relation}）`).join("；")}` : "",
         ].filter(Boolean).join("\n") : undefined;
-        const persona = await importInvestigator(myName, `（用户本人）${introSource}`, skeleton, save.mySecret, apiConfig, myHoOcc, myHoFull);
+        const persona = await importInvestigator(myName, `（用户本人）${introSource}`, skeleton, save.mySecret, apiConfig, myHoOcc, myHoFull, true);
         if (!cancelled && persona) {
           persistSave({ ...saveRef.current, myPersona: { ...persona, confirmed: false } });
           pushMessages({ id: mkId(), type: "system", text: "📇 KP 将一张身份卡推到你面前——请过目（弹窗已打开，可修改后确认）" });
@@ -349,11 +349,18 @@ export default function MapView({ world, save, onSaveUpdate, onBack }: Props) {
         const ch = characters.find(c => c.id === a.characterId);
         const name = ch?.name || "同伴";
         try {
-          // Fork: HO occupation requirement — each companion's assigned line dictates their job
-          const compHoOcc = save.boundLineHo?.[a.characterId]
-            ? save.investigatorLines?.find(l => l.ho === save.boundLineHo[a.characterId])?.occupation
+          // Fork fix: companion identity comes from THEIR assigned HO car-card (full text, not
+          // just the occupation) — same first-person treatment as the player's card
+          const compLineObj = save.boundLineHo?.[a.characterId]
+            ? save.investigatorLines?.find(l => l.ho === save.boundLineHo[a.characterId])
             : undefined;
-          const persona = await importInvestigator(name, ch?.personality || "", skeleton, save.agentSecrets?.[a.characterId], apiConfig, compHoOcc);
+          const compHoOcc = compLineObj?.occupation;
+          const compHoFull = compLineObj ? [
+            `HO代号：${compLineObj.ho}${compLineObj.occupation ? ` · 职业：${compLineObj.occupation}` : ""}`,
+            compLineObj.introStory ? `导入剧情：${compLineObj.introStory}` : "",
+            compLineObj.relations.length ? `私人关系：${compLineObj.relations.map(r => `${r.npc}（${r.relation}）`).join("；")}` : "",
+          ].filter(Boolean).join("\n") : undefined;
+          const persona = await importInvestigator(name, ch?.personality || "", skeleton, save.agentSecrets?.[a.characterId], apiConfig, compHoOcc, compHoFull, false);
           if (!cancelled && persona) {
             persistSave({
               ...saveRef.current,

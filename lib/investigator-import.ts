@@ -30,11 +30,21 @@ const PROMPT_SECRET_BLOCK = `
 补充：这是一个秘密团，每位调查员会拿到一个个人秘密。TA的秘密是：「{secret}」（与真相的咬合：{link}）。
 [背景钩子]必须与这个秘密自然衔接——TA在意这个案子的私人原因应与其秘密相关或相邻，但不要在背景里写破秘密内容。`;
 
+// Fork fix: COMPANION version — the companion IS their assigned HO, same as the player.
+// The full car-card (intro story + relations) is passed in; the persona must be written
+// from THAT story, not "a follower of that line".
 const PROMPT_HO_BLOCK = `
 
-补充：这是一个固定车卡的秘密团——TA被分配到一条指定调查员线（HO），车卡规定了TA的职业。
-TA的HO职业要求：「{ho_occupation}」。
-【职业铁律】[时代职业]必须就是「{ho_occupation}」（可按时代微调措辞，如"搞笑艺人"在不同时代可为"宫廷俳优/杂耍艺人/喜剧演员"，但职业内核不得更换）。角色卡原职业作废，[身份背景]要能解释TA为何从事这个职业并与HO导入剧情衔接。[技能模板]从候选中选与该职业最接近的。`;
+补充：这是TA本人的调查员身份卡，TA扮演的HO车卡全文如下（这是TA的身份蓝本，不是别人的故事）：
+---
+{ho_full_line}
+---
+【身份铁律】
+- 这就是TA的设定：[身份背景]采用车卡里的事实（家人、师承、关系人、经历），禁止改写车卡既定事实——TA就是车卡里的这个人（春日亭接班人之子、风月院养子……），不是"认识这个剧情的人"
+- [时代职业]必须就是车卡规定的职业「{ho_occupation}」，一字不差（"落语"就写"落语师"，"漫才"就写"漫才师"，"歌舞伎"就写"歌舞伎演员"——不许译成脱口秀演员、旅行博主之类的现代近似物）
+- TA的角色卡（性格设定）只提供说话方式与语气——人格保持不变，身份与经历完全来自车卡
+- [拿卡反应]是TA读到"自己"的这辆车卡的感想（用TA的性格口吻）
+- [背景钩子]从车卡的导入剧情里取：TA眼下正面对的那件事`;
 
 // Fork fix: PLAYER version — the user IS this HO, not a follower of one. The persona card
 // must be written first-person from the HO's own car-card: their family, their relations,
@@ -59,15 +69,19 @@ export async function importInvestigator(
   secret?: PersonalSecret,
   apiConfig: ApiConfig,
   hoOccupation?: string,
-  hoFullLine?: string,          // Fork fix: player version — the HO car-card text (intro+relations)
+  hoFullLine?: string,          // Fork fix: the HO car-card text (intro+relations) — player & companions
+  isPlayer?: boolean,           // Fork fix: player card writes in 2nd person; companion card in 3rd
 ): Promise<InvestigatorPersona | null> {
   const eraGuess = skeleton.world.lore.slice(0, 120) || skeleton.world.name;
   const occPool = OCCUPATIONS.map(o => o.name).join("/");
   let prompt = IMPORT_PROMPT.replace("{occ_pool}", occPool);
   if (hoOccupation?.trim()) {
+    // Fork fix: companions get the same first-person-from-car-card treatment as the player —
+    // the "player" block writes in 2nd person for the user; companions use the neutral one.
+    const block = isPlayer ? PROMPT_PLAYER_HO_BLOCK : PROMPT_HO_BLOCK;
     prompt += (hoFullLine?.trim()
-      ? PROMPT_PLAYER_HO_BLOCK.split("{ho_full_line}").join(hoFullLine.trim()).split("{ho_occupation}").join(hoOccupation.trim())
-      : PROMPT_HO_BLOCK.split("{ho_occupation}").join(hoOccupation.trim()));
+      ? block.split("{ho_full_line}").join(hoFullLine.trim()).split("{ho_occupation}").join(hoOccupation.trim())
+      : block.split("{ho_occupation}").join(hoOccupation.trim()).split("{ho_full_line}").join("（车卡全文缺失，仅按职业要求写）"));
   }
   if (secret) {
     prompt += PROMPT_SECRET_BLOCK.replace("{secret}", secret.content).replace("{link}", secret.link || "未注明");
