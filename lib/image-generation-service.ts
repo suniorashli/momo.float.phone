@@ -14,6 +14,7 @@ import {
   normalizeNovelAiScale,
   normalizeNovelAiSteps,
 } from "./novelai-image-config";
+import { normalizeOpenAiImageExtras } from "./openai-image-extras";
 
 export type ImageGenerationResult = {
   mediaRef: string;
@@ -347,6 +348,7 @@ async function generateImageDirect(params: {
   const { settings, prompt, referenceImageDataUrl, signal, proxyBaseUrl } = params;
   throwIfAborted(signal);
   const hasReference = Boolean(referenceImageDataUrl);
+  const extras = normalizeOpenAiImageExtras(settings);
   const url = buildImageUrl(proxyBaseUrl || settings.baseUrl, hasReference ? "edits" : "generations");
   const headers: Record<string, string> = { Authorization: `Bearer ${settings.apiKey}` };
   if (proxyBaseUrl) headers["x-upstream-base-url"] = normalizeBaseUrl(settings.baseUrl);
@@ -360,6 +362,15 @@ async function generateImageDirect(params: {
     form.set("prompt", prompt);
     if (settings.size && settings.size !== "auto") form.set("size", settings.size);
     if (settings.quality && settings.quality !== "auto") form.set("quality", settings.quality);
+    if (extras.negativePrompt) form.set("negative_prompt", extras.negativePrompt);
+    if (typeof extras.steps === "number") {
+      form.set("steps", String(extras.steps));
+      form.set("num_inference_steps", String(extras.steps));
+    }
+    if (typeof extras.guidanceScale === "number") {
+      form.set("guidance_scale", String(extras.guidanceScale));
+      form.set("cfg_scale", String(extras.guidanceScale));
+    }
     form.append("image", converted.blob, `reference.${imageExtension(converted.mimeType)}`);
     body = form;
   } else {
@@ -369,6 +380,9 @@ async function generateImageDirect(params: {
       prompt,
       ...(settings.size && settings.size !== "auto" ? { size: settings.size } : {}),
       ...(settings.quality && settings.quality !== "auto" ? { quality: settings.quality } : {}),
+      ...(extras.negativePrompt ? { negative_prompt: extras.negativePrompt } : {}),
+      ...(typeof extras.steps === "number" ? { steps: extras.steps, num_inference_steps: extras.steps } : {}),
+      ...(typeof extras.guidanceScale === "number" ? { guidance_scale: extras.guidanceScale, cfg_scale: extras.guidanceScale } : {}),
     });
   }
 
@@ -466,6 +480,7 @@ async function generateImageViaServer(params: {
         size: settings.size,
         quality: settings.quality,
         referenceImageDataUrl: referenceImageDataUrl || undefined,
+        ...normalizeOpenAiImageExtras(settings),
       }),
     });
     throwIfAborted(signal);

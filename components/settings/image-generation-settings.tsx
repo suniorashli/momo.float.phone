@@ -103,6 +103,9 @@ export function ImageGenerationSettings() {
             size: settings.size,
             quality: settings.quality,
             extraPrompt: settings.extraPrompt,
+            negativePrompt: settings.negativePrompt,
+            steps: settings.steps,
+            guidanceScale: settings.guidanceScale,
         }]
     ), [settings]);
     const activeOpenAiPresetId = settings.activeOpenAiPresetId && openaiPresets.some(p => p.id === settings.activeOpenAiPresetId)
@@ -124,6 +127,9 @@ export function ImageGenerationSettings() {
             size: loaded.size,
             quality: loaded.quality,
             extraPrompt: loaded.extraPrompt,
+            negativePrompt: loaded.negativePrompt,
+            steps: loaded.steps,
+            guidanceScale: loaded.guidanceScale,
         } satisfies OpenAiImagePreset];
         const loadedActiveId = loaded.activeOpenAiPresetId && loadedPresets.some(preset => preset.id === loaded.activeOpenAiPresetId)
             ? loaded.activeOpenAiPresetId
@@ -199,26 +205,26 @@ export function ImageGenerationSettings() {
     const updateOpenAiPreset = useCallback((patch: Partial<OpenAiImagePreset>) => {
         const nextPresets = openaiPresets.map(preset => preset.id === activeOpenAiPresetId ? { ...preset, ...patch } : preset);
         const active = nextPresets.find(preset => preset.id === activeOpenAiPresetId) || nextPresets[0];
-        persist({ ...settings, openaiPresets: nextPresets, activeOpenAiPresetId, requestMode: active.requestMode, apiKey: active.apiKey, baseUrl: active.baseUrl, model: active.model, size: active.size, quality: active.quality, extraPrompt: active.extraPrompt });
+        persist({ ...settings, openaiPresets: nextPresets, activeOpenAiPresetId, requestMode: active.requestMode, apiKey: active.apiKey, baseUrl: active.baseUrl, model: active.model, size: active.size, quality: active.quality, extraPrompt: active.extraPrompt, negativePrompt: active.negativePrompt, steps: active.steps, guidanceScale: active.guidanceScale });
     }, [activeOpenAiPresetId, openaiPresets, persist, settings]);
 
     const addOpenAiPreset = useCallback(() => {
         const newId = `preset_openai_${Date.now()}`;
         const newPreset = { ...activeOpenAiPreset, id: newId, name: `${activeOpenAiPreset.name || "默认方案"}（副本）` };
-        persist({ ...settings, openaiPresets: [...openaiPresets, newPreset], activeOpenAiPresetId: newId, requestMode: newPreset.requestMode, apiKey: newPreset.apiKey, baseUrl: newPreset.baseUrl, model: newPreset.model, size: newPreset.size, quality: newPreset.quality, extraPrompt: newPreset.extraPrompt });
+        persist({ ...settings, openaiPresets: [...openaiPresets, newPreset], activeOpenAiPresetId: newId, requestMode: newPreset.requestMode, apiKey: newPreset.apiKey, baseUrl: newPreset.baseUrl, model: newPreset.model, size: newPreset.size, quality: newPreset.quality, extraPrompt: newPreset.extraPrompt, negativePrompt: newPreset.negativePrompt, steps: newPreset.steps, guidanceScale: newPreset.guidanceScale });
     }, [activeOpenAiPreset, openaiPresets, persist, settings]);
 
     const deleteOpenAiPreset = useCallback(() => {
         if (openaiPresets.length <= 1) return;
         const next = openaiPresets.filter(preset => preset.id !== activeOpenAiPresetId);
         const active = next[0];
-        persist({ ...settings, openaiPresets: next, activeOpenAiPresetId: active.id, requestMode: active.requestMode, apiKey: active.apiKey, baseUrl: active.baseUrl, model: active.model, size: active.size, quality: active.quality, extraPrompt: active.extraPrompt });
+        persist({ ...settings, openaiPresets: next, activeOpenAiPresetId: active.id, requestMode: active.requestMode, apiKey: active.apiKey, baseUrl: active.baseUrl, model: active.model, size: active.size, quality: active.quality, extraPrompt: active.extraPrompt, negativePrompt: active.negativePrompt, steps: active.steps, guidanceScale: active.guidanceScale });
     }, [activeOpenAiPresetId, openaiPresets, persist, settings]);
 
     const selectOpenAiPreset = useCallback((id: string) => {
         const active = openaiPresets.find(preset => preset.id === id);
         if (!active) return;
-        persist({ ...settings, activeOpenAiPresetId: id, requestMode: active.requestMode, apiKey: active.apiKey, baseUrl: active.baseUrl, model: active.model, size: active.size, quality: active.quality, extraPrompt: active.extraPrompt });
+        persist({ ...settings, activeOpenAiPresetId: id, requestMode: active.requestMode, apiKey: active.apiKey, baseUrl: active.baseUrl, model: active.model, size: active.size, quality: active.quality, extraPrompt: active.extraPrompt, negativePrompt: active.negativePrompt, steps: active.steps, guidanceScale: active.guidanceScale });
     }, [openaiPresets, persist, settings]);
 
     // NovelAI 预设管理与状态
@@ -883,6 +889,48 @@ export function ImageGenerationSettings() {
                             <p className="menu-desc ml-1 opacity-70">
                                 选择尺寸后会自动在末尾追加一句「{RATIO_HINT_MARKER}…」构图提示，用于纠正部分不认 size 参数的接口（如 gpt-image-2）。可手动修改或删除。
                             </p>
+                        </div>
+
+                        <div className="flex flex-col gap-1">
+                            <label className="menu-desc ml-1">负面提示词（可选，SD 系中转站扩展）</label>
+                            <Textarea
+                                value={activeOpenAiPreset.negativePrompt || ""}
+                                onChange={(event) => updateOpenAiPreset({ negativePrompt: event.target.value })}
+                                placeholder="lowres, bad anatomy, bad hands, blurry, watermark..."
+                            />
+                            <span className="menu-desc ml-1 opacity-70">
+                                填写后以 negative_prompt 字段随请求发送；官方 OpenAI 接口不认识该字段，请留空。
+                            </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="flex flex-col gap-1">
+                                <label className="menu-desc ml-1">生成步数（可选）</label>
+                                <Input
+                                    type="number"
+                                    min={1}
+                                    max={150}
+                                    value={activeOpenAiPreset.steps ?? ""}
+                                    onChange={(event) => updateOpenAiPreset({
+                                        steps: event.target.value === "" ? undefined : Math.max(1, Math.min(150, parseInt(event.target.value, 10) || 0)),
+                                    })}
+                                />
+                                <span className="menu-desc ml-1 opacity-70">留空不发送。同时以 steps 与 num_inference_steps 发送，兼容不同中转站。</span>
+                            </div>
+                            <div className="flex flex-col gap-1">
+                                <label className="menu-desc ml-1">提示词引导值 CFG（可选）</label>
+                                <Input
+                                    type="number"
+                                    min={0}
+                                    max={30}
+                                    step={0.1}
+                                    value={activeOpenAiPreset.guidanceScale ?? ""}
+                                    onChange={(event) => updateOpenAiPreset({
+                                        guidanceScale: event.target.value === "" ? undefined : Math.max(0, Math.min(30, parseFloat(event.target.value) || 0)),
+                                    })}
+                                />
+                                <span className="menu-desc ml-1 opacity-70">留空或 0 不发送。同时以 guidance_scale 与 cfg_scale 发送。</span>
+                            </div>
                         </div>
                     </>
                 )}

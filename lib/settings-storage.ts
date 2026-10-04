@@ -740,6 +740,13 @@ function normalizeOpenAiPreset(preset: Partial<OpenAiImagePreset> | null | undef
         size: typeof preset?.size === "string" ? preset.size : DEFAULT_IMAGE_GENERATION_SETTINGS.size,
         quality: typeof preset?.quality === "string" ? preset.quality : DEFAULT_IMAGE_GENERATION_SETTINGS.quality,
         extraPrompt: typeof preset?.extraPrompt === "string" ? preset.extraPrompt : "",
+        negativePrompt: typeof preset?.negativePrompt === "string" ? preset.negativePrompt : "",
+        steps: typeof preset?.steps === "number" && Number.isFinite(preset.steps)
+            ? Math.max(1, Math.min(150, Math.floor(preset.steps)))
+            : undefined,
+        guidanceScale: typeof preset?.guidanceScale === "number" && Number.isFinite(preset.guidanceScale)
+            ? Math.max(0, Math.min(30, Number(preset.guidanceScale.toFixed(1))))
+            : undefined,
     };
 }
 
@@ -831,6 +838,9 @@ function normalizeImageGenerationSettings(settings: Partial<ImageGenerationSetti
         size: activeOpenAiPreset.size,
         quality: activeOpenAiPreset.quality,
         extraPrompt: activeOpenAiPreset.extraPrompt,
+        negativePrompt: activeOpenAiPreset.negativePrompt,
+        steps: activeOpenAiPreset.steps,
+        guidanceScale: activeOpenAiPreset.guidanceScale,
         openaiPresets,
         activeOpenAiPresetId,
         novelai,

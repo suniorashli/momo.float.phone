@@ -191,6 +191,10 @@ export type OpenAiImagePreset = {
     size: string;
     quality: string;
     extraPrompt: string;
+    /** OpenAI 兼容生图扩展参数（仅部分 SD/NovelAI 类中转站支持，留空不发送） */
+    negativePrompt?: string;
+    steps?: number;
+    guidanceScale?: number;
 };
 
 export type ImageHostingProvider = "none" | "imgbb";
@@ -238,6 +242,10 @@ export type ImageGenerationSettings = {
     size: string;
     quality: string;
     extraPrompt: string;
+    // OpenAI 模式扩展参数（当前激活预设的镜像平铺；由存储层在加载/保存时回填）
+    negativePrompt?: string;
+    steps?: number;
+    guidanceScale?: number;
     openaiPresets?: OpenAiImagePreset[];
     activeOpenAiPresetId?: string;
     // NovelAI 模式配置

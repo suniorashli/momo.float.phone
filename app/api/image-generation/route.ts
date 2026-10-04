@@ -25,6 +25,10 @@ type ImageGenerationRequest = {
   size?: string;
   quality?: string;
   referenceImageDataUrl?: string;
+  // OpenAI 兼容扩展参数（SD / NovelAI 类中转站私有字段；留空不发送）
+  negativePrompt?: string;
+  steps?: number;
+  guidanceScale?: number;
   // NovelAI 专属参数
   negativePrompt?: string;
   steps?: number;
@@ -320,6 +324,15 @@ async function runImageGeneration(input: ImageGenerationRequest): Promise<{ stat
       form.set("prompt", prompt);
       if (input.size && input.size !== "auto") form.set("size", input.size);
       if (input.quality && input.quality !== "auto") form.set("quality", input.quality);
+      if (input.negativePrompt) form.set("negative_prompt", input.negativePrompt);
+      if (typeof input.steps === "number") {
+        form.set("steps", String(input.steps));
+        form.set("num_inference_steps", String(input.steps));
+      }
+      if (typeof input.guidanceScale === "number") {
+        form.set("guidance_scale", String(input.guidanceScale));
+        form.set("cfg_scale", String(input.guidanceScale));
+      }
       form.append("image", converted.blob, `reference.${converted.mimeType.split("/")[1] || "png"}`);
       body = form;
     } else {
@@ -329,6 +342,9 @@ async function runImageGeneration(input: ImageGenerationRequest): Promise<{ stat
         prompt,
         ...(input.size && input.size !== "auto" ? { size: input.size } : {}),
         ...(input.quality && input.quality !== "auto" ? { quality: input.quality } : {}),
+        ...(input.negativePrompt ? { negative_prompt: input.negativePrompt } : {}),
+        ...(typeof input.steps === "number" ? { steps: input.steps, num_inference_steps: input.steps } : {}),
+        ...(typeof input.guidanceScale === "number" ? { guidance_scale: input.guidanceScale, cfg_scale: input.guidanceScale } : {}),
       });
     }
 

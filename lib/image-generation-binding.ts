@@ -67,6 +67,9 @@ export function applyImageGenerationBinding(
       size: preset.size,
       quality: preset.quality,
       extraPrompt: preset.extraPrompt,
+      negativePrompt: preset.negativePrompt,
+      steps: preset.steps,
+      guidanceScale: preset.guidanceScale,
       activeOpenAiPresetId: preset.id,
     };
   }
