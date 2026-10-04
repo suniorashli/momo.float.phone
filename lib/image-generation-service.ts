@@ -7,7 +7,9 @@ import { storeMediaBlob } from "./media-cache-storage";
 import { throwIfAborted } from "./abort-utils";
 import {
   NOVELAI_COMMON_MODELS,
+  buildNovelAiGenerateUrl,
   getNovelAiResolution,
+  normalizeNovelAiBaseUrl,
   normalizeNovelAiModel,
   normalizeNovelAiNoiseSchedule,
   normalizeNovelAiSampler,
@@ -542,16 +544,17 @@ async function generateImageViaServer(params: {
 
 async function generateNovelAiDirect(params: {
   apiKey: string;
+  baseUrl?: string;
   preset: NovelAiPreset;
   prompt: string;
   signal?: AbortSignal;
 }): Promise<ImageGenerationApiResponse> {
-  const { apiKey, preset, prompt, signal } = params;
+  const { apiKey, baseUrl, preset, prompt, signal } = params;
   throwIfAborted(signal);
 
   const { width, height } = getNovelAiResolution(preset.resolution);
 
-  const url = "https://image.novelai.net/ai/generate-image";
+  const url = buildNovelAiGenerateUrl(baseUrl);
   const headers: Record<string, string> = {
     Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
@@ -630,11 +633,12 @@ async function generateNovelAiDirect(params: {
 
 async function generateNovelAiViaServer(params: {
   apiKey: string;
+  baseUrl?: string;
   preset: NovelAiPreset;
   prompt: string;
   signal?: AbortSignal;
 }): Promise<ImageGenerationApiResponse> {
-  const { apiKey, preset, prompt, signal } = params;
+  const { apiKey, baseUrl, preset, prompt, signal } = params;
   throwIfAborted(signal);
 
   const controller = new AbortController();
@@ -651,6 +655,7 @@ async function generateNovelAiViaServer(params: {
       body: JSON.stringify({
         provider: "novelai",
         apiKey,
+        baseUrl: baseUrl || undefined,
         model: normalizeNovelAiModel(preset.model),
         prompt,
         size: resolution.value,
@@ -721,14 +726,16 @@ async function generateNovelAiViaServer(params: {
   }
 }
 
-export async function fetchNovelAiModels(apiKey: string): Promise<string[]> {
+export async function fetchNovelAiModels(apiKey: string, baseUrl?: string): Promise<string[]> {
   const token = apiKey.trim();
   if (!token) throw new Error("请先填写 NovelAI API Token。");
 
+  const base = normalizeNovelAiBaseUrl(baseUrl);
+  const userDataUrl = base ? `${base}/user/data` : "https://image.novelai.net/user/data";
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
   try {
-    const res = await fetch("https://image.novelai.net/user/data", {
+    const res = await fetch(userDataUrl, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}` },
       signal: controller.signal,
@@ -736,7 +743,9 @@ export async function fetchNovelAiModels(apiKey: string): Promise<string[]> {
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
       if (res.status === 401 || res.status === 403) {
-        throw new Error("NovelAI API Token 无效或已失效，请重新获取后再试。");
+        throw new Error(base
+          ? `Token 验证未通过（自定义地址返回 ${res.status}）。请确认中转站使用 NovelAI 原生接口且 Key 正确；若你的站点是 OpenAI 兼容格式，请改用 OpenAI 兼容引擎。`
+          : "NovelAI API Token 无效或已失效，请重新获取后再试。");
       }
       throw new Error(`NovelAI Token 验证失败 ${res.status}${detail ? `: ${detail.slice(0, 160)}` : ""}`);
     }
@@ -800,9 +809,10 @@ export async function generateImageFromConfiguredApi(params: {
     const fullPrompt = positiveParts.join(", ");
 
     const novelAiRequestMode = settings.novelai?.requestMode || settings.requestMode;
+    const novelAiBaseUrl = normalizeNovelAiBaseUrl(settings.novelai?.baseUrl);
     const data = novelAiRequestMode === "direct"
-      ? await generateNovelAiDirect({ apiKey: naiApiKey, preset: activePreset, prompt: fullPrompt, signal: params.signal })
-      : await generateNovelAiViaServer({ apiKey: naiApiKey, preset: activePreset, prompt: fullPrompt, signal: params.signal });
+      ? await generateNovelAiDirect({ apiKey: naiApiKey, baseUrl: novelAiBaseUrl, preset: activePreset, prompt: fullPrompt, signal: params.signal })
+      : await generateNovelAiViaServer({ apiKey: naiApiKey, baseUrl: novelAiBaseUrl, preset: activePreset, prompt: fullPrompt, signal: params.signal });
 
     throwIfAborted(params.signal);
     const mimeType = data.mimeType || "image/png";

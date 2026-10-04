@@ -3,6 +3,7 @@ import { ProxyAgent, type Dispatcher } from "undici";
 import JSZip from "jszip";
 import {
   NOVELAI_DEFAULT_MODEL,
+  buildNovelAiGenerateUrl,
   getNovelAiResolution,
   isNovelAiNoiseSchedule,
   isNovelAiResolution,
@@ -19,6 +20,7 @@ export const maxDuration = 120;
 type ImageGenerationRequest = {
   provider?: "openai" | "novelai";
   apiKey?: string;
+  /** OpenAI 兼容模式：上游 Base URL；NovelAI 模式：自定义 NAI 原生端点（空 = 官方） */
   baseUrl?: string;
   model?: string;
   prompt?: string;
@@ -212,12 +214,13 @@ async function runNovelAiGeneration(input: ImageGenerationRequest): Promise<{ st
 
     const { width, height } = getNovelAiResolution(input.size);
 
-    const url = "https://image.novelai.net/ai/generate-image";
+    const customBase = typeof input.baseUrl === "string" ? input.baseUrl.trim().replace(/\/+$/, "") : "";
+    const url = buildNovelAiGenerateUrl(customBase);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
-      Origin: "https://novelai.net",
-      Referer: "https://novelai.net/",
+      // 官方接口要求模拟浏览器来源；第三方中转通常不需要且部分网关会因此拒收，故仅在官方端点附加。
+      ...(customBase ? {} : { Origin: "https://novelai.net", Referer: "https://novelai.net/" }),
     };
 
     const parameters: Record<string, unknown> = {

@@ -234,6 +234,7 @@ export function ImageGenerationSettings() {
         const activePreset = presets.find(p => p.id === nai?.activePresetId) || presets[0];
         return {
             apiKey: nai?.apiKey || "",
+            baseUrl: nai?.baseUrl || "",
             requestMode: nai?.requestMode || settings.requestMode,
             activePresetId: activePreset.id,
             presets,
@@ -246,6 +247,7 @@ export function ImageGenerationSettings() {
             ...settings,
             novelai: {
                 apiKey: naiSettings.apiKey,
+                baseUrl: naiSettings.baseUrl,
                 requestMode: naiSettings.requestMode,
                 activePresetId: naiSettings.activePresetId,
                 presets: naiSettings.presets,
@@ -331,7 +333,7 @@ export function ImageGenerationSettings() {
         }
         setIsFetchingNaiModels(true);
         try {
-            const fetched = await fetchNovelAiModels(naiSettings.apiKey);
+            const fetched = await fetchNovelAiModels(naiSettings.apiKey, naiSettings.baseUrl);
             setNaiModels(fetched);
             setNaiTokenStatus({
                 success: true,
@@ -558,6 +560,19 @@ export function ImageGenerationSettings() {
                                     </Alert>
                                 </div>
                             )}
+                        </div>
+
+                        <div className="flex flex-col gap-1">
+                            <label className="menu-desc ml-1">自定义 API 地址（可选）</label>
+                            <Input
+                                type="url"
+                                value={naiSettings.baseUrl}
+                                onChange={(event) => updateNovelAi({ baseUrl: event.target.value })}
+                                placeholder="留空使用官方 https://image.novelai.net"
+                            />
+                            <span className="menu-desc ml-1 opacity-70">
+                                第三方 NovelAI 原生接口中转站填站点根地址（会自动拼接 /ai/generate-image，也支持直接填完整生成地址）。仅适用于 NAI 原生格式站点；OpenAI 兼容格式的站点请用上面的 OpenAI 引擎。
+                            </span>
                         </div>
 
                         {/* 预设管理栏 */}

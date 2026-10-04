@@ -105,3 +105,24 @@ export function normalizeNovelAiScale(value: unknown): number {
     ? Math.max(1, Math.min(30, Number(value.toFixed(1))))
     : NOVELAI_DEFAULT_SCALE;
 }
+
+/** NovelAI 官方生图端点。 */
+export const NOVELAI_IMAGE_ENDPOINT = "https://image.novelai.net/ai/generate-image";
+
+/** 规整自定义 NovelAI 地址（去尾部斜杠；非字符串/空 = 用官方端点）。 */
+export function normalizeNovelAiBaseUrl(value: unknown): string {
+  return typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
+}
+
+/**
+ * 拼出 NovelAI 生图端点：
+ * - 空 → 官方 image.novelai.net
+ * - 已是完整生成地址（以 /ai/generate-image 结尾）→ 原样使用
+ * - 站点根地址（如 https://nai.example.com 或 …/v1）→ 自动拼接 /ai/generate-image
+ */
+export function buildNovelAiGenerateUrl(baseUrl: string): string {
+  const base = normalizeNovelAiBaseUrl(baseUrl);
+  if (!base) return NOVELAI_IMAGE_ENDPOINT;
+  if (/\/ai\/generate-image$/i.test(base)) return base;
+  return `${base}/ai/generate-image`;
+}
