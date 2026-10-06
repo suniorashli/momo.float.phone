@@ -770,6 +770,8 @@ export async function generateImageFromConfiguredApi(params: {
   /** 内容所属 APP；用于按“角色 > APP > 全局”解析生图方案。 */
   appId?: string;
   useReferenceImage?: boolean;
+  /** 是否拼接角色固定外观特征 prompt 与参考图（缺省时栖所 appId="dwelling" 自动为 false，其他场景为 true） */
+  includeCharacterFeatures?: boolean;
   settings?: ImageGenerationSettings;
   signal?: AbortSignal;
 }): Promise<ImageGenerationResult | null> {
@@ -796,12 +798,13 @@ export async function generateImageFromConfiguredApi(params: {
       : [DEFAULT_NOVELAI_PRESET];
     const activePreset = presets.find(p => p.id === settings.novelai?.activePresetId) || presets[0];
 
+    const shouldIncludeFeatures = params.includeCharacterFeatures ?? (params.appId !== "dwelling");
     const positiveParts: string[] = [];
     if (activePreset.positivePrompt?.trim()) positiveParts.push(activePreset.positivePrompt.trim());
     const novelAiCharacterReference = params.characterId
       ? settings.characterReferences?.[params.characterId]
       : undefined;
-    const characterFeaturePrompt = novelAiCharacterReference?.novelAiFeaturePromptEnabled !== false
+    const characterFeaturePrompt = (shouldIncludeFeatures && novelAiCharacterReference?.novelAiFeaturePromptEnabled !== false)
       ? novelAiCharacterReference?.featurePrompt?.trim()
       : "";
     if (characterFeaturePrompt) positiveParts.push(characterFeaturePrompt);
@@ -837,10 +840,12 @@ export async function generateImageFromConfiguredApi(params: {
   const openaiSettings = openaiPreset ? { ...settings, ...openaiPreset } : settings;
   if (!openaiSettings.apiKey.trim() || !openaiSettings.baseUrl.trim() || !openaiSettings.model.trim()) return null;
 
+  const shouldIncludeFeatures = params.includeCharacterFeatures ?? (params.appId !== "dwelling");
   const reference = params.characterId ? settings.characterReferences?.[params.characterId] : undefined;
-  // 「非自拍不使用参考图」开关已从生图设置页删除：参考图启用后始终参与生成
+  // 「非自拍不使用参考图」开关已从生图设置页删除：参考图启用后始终参与生成（纯场景等场景除外）
   const shouldUseReference = Boolean(
-    params.useReferenceImage
+    shouldIncludeFeatures
+    && params.useReferenceImage
     && reference?.assetId
     && reference.enabled !== false,
   );
@@ -852,7 +857,7 @@ export async function generateImageFromConfiguredApi(params: {
     ? await normalizeReferenceImageForEdit(rawReferenceImageDataUrl, reference?.faceCrop)
     : null;
   throwIfAborted(params.signal);
-  const characterPrompt = reference?.featurePrompt?.trim() || "";
+  const characterPrompt = shouldIncludeFeatures ? (reference?.featurePrompt?.trim() || "") : "";
   const prompt = mergePrompt(
     characterPrompt ? `${description}\n\n【角色固定外观】${characterPrompt}` : description,
     openaiSettings.extraPrompt,
